@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, shell, Tray } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
@@ -11,6 +12,28 @@ let mainWindow: BrowserWindow | null = null;
 let companionWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+const COMPANION_BASE_WIDTH = 560;
+const COMPANION_BASE_HEIGHT = 390;
+type CompanionSettings = { scale: number; visible: boolean };
+let companionSettings: CompanionSettings = { scale: 1, visible: true };
+
+const companionSettingsPath = () => path.join(app.getPath('userData'), 'companion-settings.json');
+const normalizeCompanionSettings = (settings: Partial<CompanionSettings>): CompanionSettings => ({
+  scale: [0.8, 1, 1.2].includes(Number(settings.scale)) ? Number(settings.scale) : companionSettings.scale,
+  visible: typeof settings.visible === 'boolean' ? settings.visible : companionSettings.visible
+});
+const loadCompanionSettings = () => {
+  try {
+    companionSettings = normalizeCompanionSettings(JSON.parse(fs.readFileSync(companionSettingsPath(), 'utf8')) as Partial<CompanionSettings>);
+  } catch {
+    // First launch and malformed preference files both fall back to the safe defaults.
+  }
+};
+const saveCompanionSettings = () => fs.writeFileSync(companionSettingsPath(), JSON.stringify(companionSettings));
+const companionDimensions = () => ({
+  width: Math.round(COMPANION_BASE_WIDTH * companionSettings.scale),
+  height: Math.round(COMPANION_BASE_HEIGHT * companionSettings.scale)
+});
 
 const keyboardKeyMap = new Map<number, string>([
   [UiohookKey.A, 'KeyA'], [UiohookKey.B, 'KeyB'], [UiohookKey.C, 'KeyC'], [UiohookKey.D, 'KeyD'], [UiohookKey.E, 'KeyE'], [UiohookKey.F, 'KeyF'], [UiohookKey.G, 'KeyG'], [UiohookKey.H, 'KeyH'], [UiohookKey.I, 'KeyI'], [UiohookKey.J, 'KeyJ'], [UiohookKey.K, 'KeyK'], [UiohookKey.L, 'KeyL'], [UiohookKey.M, 'KeyM'], [UiohookKey.N, 'KeyN'], [UiohookKey.O, 'KeyO'], [UiohookKey.P, 'KeyP'], [UiohookKey.Q, 'KeyQ'], [UiohookKey.R, 'KeyR'], [UiohookKey.S, 'KeyS'], [UiohookKey.T, 'KeyT'], [UiohookKey.U, 'KeyU'], [UiohookKey.V, 'KeyV'], [UiohookKey.W, 'KeyW'], [UiohookKey.X, 'KeyX'], [UiohookKey.Y, 'KeyY'], [UiohookKey.Z, 'KeyZ'],
@@ -29,14 +52,26 @@ const showWindow = () => {
   mainWindow.focus();
 };
 
+const showCompanion = () => {
+  companionSettings.visible = true;
+  saveCompanionSettings();
+  companionWindow?.showInactive();
+};
+
+const hideCompanion = () => {
+  companionSettings.visible = false;
+  saveCompanionSettings();
+  companionWindow?.hide();
+};
+
 const createTray = () => {
   const icon = nativeImage.createFromPath(getIconPath());
   tray = new Tray(icon);
   tray.setToolTip('LecPunch Election');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示 LecPunch Election', click: showWindow },
-    { label: '显示桌面小猫', click: () => companionWindow?.showInactive() },
-    { label: '隐藏桌面小猫', click: () => companionWindow?.hide() },
+    { label: '显示桌面小猫', click: showCompanion },
+    { label: '隐藏桌面小猫', click: hideCompanion },
     { type: 'separator' },
     {
       label: '退出',
@@ -101,13 +136,10 @@ const createWindow = () => {
 };
 
 const createCompanionWindow = () => {
+  const dimensions = companionDimensions();
   companionWindow = new BrowserWindow({
-    width: 520,
-    height: 340,
-    minWidth: 520,
-    minHeight: 340,
-    maxWidth: 520,
-    maxHeight: 340,
+    width: dimensions.width,
+    height: dimensions.height,
     frame: false,
     transparent: true,
     resizable: false,
@@ -116,6 +148,7 @@ const createCompanionWindow = () => {
     alwaysOnTop: true,
     focusable: true,
     hasShadow: false,
+    show: false,
     backgroundColor: '#00000000',
     icon: getIconPath(),
     webPreferences: {
@@ -131,6 +164,9 @@ const createCompanionWindow = () => {
     return { action: 'deny' };
   });
   void loadRenderer(companionWindow, 'companion');
+  companionWindow.once('ready-to-show', () => {
+    if (companionSettings.visible) companionWindow?.showInactive();
+  });
   companionWindow.on('close', (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -154,6 +190,7 @@ app.whenReady().then(() => {
   });
 
   Menu.setApplicationMenu(null);
+  loadCompanionSettings();
   createWindow();
   createCompanionWindow();
   createTray();
@@ -178,19 +215,27 @@ app.whenReady().then(() => {
 
   ipcMain.handle('desktop:hide-to-tray', () => mainWindow?.hide());
   ipcMain.handle('desktop:set-immersive', (_event, enabled: boolean) => {
-    mainWindow?.setFullScreen(Boolean(enabled));
+    mainWindow?.webContents.send('desktop:main-immersive', Boolean(enabled));
   });
-  ipcMain.handle('desktop:move-companion-by', (event, delta: { x?: number; y?: number }) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window || window !== companionWindow) return;
+  ipcMain.handle('desktop:get-companion-settings', () => companionSettings);
+  ipcMain.handle('desktop:update-companion-settings', (_event, changes: Partial<CompanionSettings>) => {
+    const window = companionWindow;
+    companionSettings = normalizeCompanionSettings(changes);
+    saveCompanionSettings();
+    if (!window) return companionSettings;
     const [x, y] = window.getPosition();
-    const [width, height] = window.getSize();
+    const [oldWidth, oldHeight] = window.getSize();
+    const { width, height } = companionDimensions();
     const display = screen.getDisplayNearestPoint({ x, y });
     const area = display.workArea;
-    const nextX = Math.max(area.x, Math.min(x + Number(delta.x || 0), area.x + area.width - width));
-    const nextY = Math.max(area.y, Math.min(y + Number(delta.y || 0), area.y + area.height - height));
-    window.setPosition(Math.round(nextX), Math.round(nextY));
+    const nextX = Math.max(area.x, Math.min(x + Math.round((oldWidth - width) / 2), area.x + area.width - width));
+    const nextY = Math.max(area.y, Math.min(y + Math.round((oldHeight - height) / 2), area.y + area.height - height));
+    window.setBounds({ x: nextX, y: nextY, width, height });
+    if (companionSettings.visible) window.showInactive();
+    else window.hide();
+    return companionSettings;
   });
+  ipcMain.handle('desktop:open-focus-assist', () => shell.openExternal('ms-settings:quiethours'));
   ipcMain.handle('desktop:show-main', (_event, action: 'schedule' | 'shop') => {
     showWindow();
     mainWindow?.webContents.send('desktop:main-action', action);

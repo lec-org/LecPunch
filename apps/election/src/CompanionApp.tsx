@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { type CSSProperties, useEffect, useState } from 'react';
 import { BongoCatCompanion } from '@/components/BongoCatCompanion';
 import { checkIn, checkOut, fetchAttendance } from '@/lib/api';
 import type { AttendanceSnapshot } from '@/types';
@@ -6,6 +6,8 @@ import type { AttendanceSnapshot } from '@/types';
 export const CompanionApp = () => {
   const [attendance, setAttendance] = useState<AttendanceSnapshot | null>(null);
   const [immersive, setImmersive] = useState(false);
+  const [catScale, setCatScale] = useState(1);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshAttendance = async () => {
     try {
@@ -18,6 +20,7 @@ export const CompanionApp = () => {
   useEffect(() => {
     document.body.classList.add('companion-body');
     void refreshAttendance();
+    void window.lecpunchDesktop?.getCompanionSettings().then((settings) => setCatScale(settings.scale));
     const timer = window.setInterval(() => void refreshAttendance(), 30_000);
     return () => {
       document.body.classList.remove('companion-body');
@@ -44,9 +47,19 @@ export const CompanionApp = () => {
   const toggleImmersive = () => {
     const next = !immersive;
     setImmersive(next);
+    localStorage.setItem('lecpunch.election.immersive-enabled', String(next));
     void window.lecpunchDesktop?.setImmersive(next);
-    void window.lecpunchDesktop?.notify({ title: 'LecPunch', body: next ? '沉浸模式已开启。' : '沉浸模式已退出。' });
+    void window.lecpunchDesktop?.notify({ title: 'LecPunch', body: next ? '免提示模式已开启，本应用提醒将静音。' : '免提示模式已退出。' });
   };
 
-  return <main className="companion-shell"><BongoCatCompanion desktop attendanceActive={Boolean(attendance?.hasActiveSession)} immersive={immersive} onAttendance={() => void toggleAttendance()} onToggleImmersive={toggleImmersive} onOpenSchedule={() => window.lecpunchDesktop?.showMain('schedule')} onOpenShop={() => window.lecpunchDesktop?.showMain('shop')} /></main>;
+  const updateCatScale = async (scale: number) => {
+    const settings = await window.lecpunchDesktop?.updateCompanionSettings({ scale });
+    setCatScale(settings?.scale ?? scale);
+  };
+
+  const hideCat = async () => {
+    await window.lecpunchDesktop?.updateCompanionSettings({ visible: false });
+  };
+
+  return <main className="companion-shell" style={{ '--companion-scale': catScale } as CSSProperties}><BongoCatCompanion desktop attendanceActive={Boolean(attendance?.hasActiveSession)} immersive={immersive} catScale={catScale} settingsOpen={settingsOpen} onToggleSettings={() => setSettingsOpen((open) => !open)} onSetCatScale={(scale) => void updateCatScale(scale)} onSetVisible={(visible) => { if (!visible) void hideCat(); }} onOpenFocusAssist={() => void window.lecpunchDesktop?.openFocusAssist()} onAttendance={() => void toggleAttendance()} onToggleImmersive={toggleImmersive} onOpenSchedule={() => window.lecpunchDesktop?.showMain('schedule')} onOpenShop={() => window.lecpunchDesktop?.showMain('shop')} /></main>;
 };
