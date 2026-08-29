@@ -24,7 +24,7 @@ pnpm --filter @lecpunch/election package:win
 
 复制 `.env.example` 为 `.env.local` 后，可配置：
 
-- `VITE_API_BASE_URL`：LecPunch API 根地址，默认为 `http://127.0.0.1:4000`。
+- `VITE_API_BASE_URL`：LecPunch API 根地址，默认为 `http://43.138.244.158/api`。
 - `VITE_REPORTS_MANIFEST_URL`：中央报告仓库中 `overview/current.json` 的公开地址。未配置时，报告页会显示接入提示而不会请求服务端。
 
 ## 统一报告清单

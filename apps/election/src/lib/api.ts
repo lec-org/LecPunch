@@ -1,6 +1,6 @@
 import type { AttendanceSnapshot, ElectionUser } from '@/types';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:4000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://43.138.244.158/api';
 const TOKEN_KEY = 'lecpunch.election.token';
 
 export const getApiBaseUrl = () => API_BASE_URL;
