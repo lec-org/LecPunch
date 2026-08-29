@@ -8,6 +8,7 @@
     "dev:electron": "tsc -p tsconfig.electron.json --watch",
     "dev:renderer": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1",
     "build": "tsc -p tsconfig.electron.json && tsc -b && node ./node_modules/vite/bin/vite.js build",
+    "package:win": "node scripts/package-win.mjs",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -b",
     "start": "node ./node_modules/electron/cli.js ."
@@ -24,7 +25,39 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react-swc": "^4.3.0",
     "electron": "^40.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-builder": "^26.0.0",
     "typescript": "^5.5.4",
     "vite": "^8.0.3"
+  },
+  "build": {
+    "appId": "org.lecpunch.election",
+    "productName": "LecPunch Election",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      ".electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LecPunch Election"
+    }
   }
 }

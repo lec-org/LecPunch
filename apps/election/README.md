@@ -14,6 +14,14 @@ pnpm --filter @lecpunch/election dev
 pnpm --filter @lecpunch/election build
 ```
 
+生成 Windows 64 位安装程序：
+
+```bash
+pnpm --filter @lecpunch/election package:win
+```
+
+默认安装文件生成在 `Downloads/LecPunch-Election-Installer/`，可安装到自选目录，并创建桌面和开始菜单快捷方式。可通过 `LECPUNCH_ELECTION_OUTPUT_DIR` 指定其它输出目录。
+
 复制 `.env.example` 为 `.env.local` 后，可配置：
 
 - `VITE_API_BASE_URL`：LecPunch API 根地址，默认为 `http://127.0.0.1:4000`。
