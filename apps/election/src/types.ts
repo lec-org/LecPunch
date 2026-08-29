@@ -30,3 +30,18 @@ export interface WeeklyReportFeed {
   generatedAt?: string;
   members: WeeklyReportItem[];
 }
+
+export interface TeamWeeklyStat {
+  memberKey: string;
+  displayName: string;
+  realName?: string;
+  enrollYear?: number;
+  role: 'member' | 'admin';
+  totalDurationSeconds: number;
+  sessionsCount: number;
+  weekKey: string;
+}
+
+export interface TeamWeeklyStatsResponse {
+  items: TeamWeeklyStat[];
+}

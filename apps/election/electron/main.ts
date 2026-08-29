@@ -1,12 +1,41 @@
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron';
 import path from 'node:path';
 
-const createWindow = () => {
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'icon.ico')
-    : path.join(__dirname, '..', 'resources', 'icon.ico');
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 
-  const window = new BrowserWindow({
+const getIconPath = () => app.isPackaged
+  ? path.join(process.resourcesPath, 'icon.ico')
+  : path.join(__dirname, '..', 'resources', 'icon.ico');
+
+const showWindow = () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+};
+
+const createTray = () => {
+  const icon = nativeImage.createFromPath(getIconPath());
+  tray = new Tray(icon);
+  tray.setToolTip('LecPunch Election');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示 LecPunch Election', click: showWindow },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]));
+  tray.on('click', showWindow);
+};
+
+const createWindow = () => {
+  mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1120,
@@ -23,7 +52,7 @@ const createWindow = () => {
         }
       : {}),
     backgroundColor: '#090e1d',
-    icon: iconPath,
+    icon: getIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -31,26 +60,57 @@ const createWindow = () => {
     }
   });
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
 
   if (app.isPackaged) {
-    void window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    void mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   } else {
-    void window.loadURL('http://127.0.0.1:5174');
+    void mainWindow.loadURL('http://127.0.0.1:5174');
   }
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 };
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   createWindow();
+  createTray();
+
+  ipcMain.handle('desktop:notify', (_event, payload: { title?: string; body?: string }) => {
+    if (!Notification.isSupported()) return;
+    new Notification({
+      title: payload.title || 'LecPunch Election',
+      body: payload.body || ''
+    }).show();
+  });
+
+  ipcMain.handle('desktop:hide-to-tray', () => mainWindow?.hide());
+  ipcMain.handle('desktop:set-immersive', (_event, enabled: boolean) => {
+    mainWindow?.setFullScreen(Boolean(enabled));
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+    } else {
+      showWindow();
     }
   });
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });
 
 app.on('window-all-closed', () => {

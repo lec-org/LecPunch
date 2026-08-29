@@ -1,4 +1,4 @@
-import type { AttendanceSnapshot, ElectionUser } from '@/types';
+import type { AttendanceSnapshot, ElectionUser, TeamWeeklyStatsResponse } from '@/types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://43.138.244.158/api';
 const TOKEN_KEY = 'lecpunch.election.token';
@@ -44,5 +44,6 @@ export const login = async (username: string, password: string) => {
 export const fetchCurrentUser = () => request<ElectionUser>('/auth/me');
 export const fetchAttendance = () => request<AttendanceSnapshot>('/attendance/current');
 export const fetchPoints = () => request<{ totalPoints: number }>('/points/me');
+export const fetchTeamWeeklyStats = () => request<TeamWeeklyStatsResponse>('/stats/team/current-week');
 export const checkIn = () => request('/attendance/check-in', { method: 'POST' });
 export const checkOut = () => request('/attendance/check-out', { method: 'POST' });
