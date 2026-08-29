@@ -13,7 +13,7 @@ const closeAll = (code = 0) => {
 };
 
 const run = (command, args) => {
-  const child = spawn(command, args, { stdio: 'inherit' });
+  const child = spawn(command, args, { stdio: 'inherit', shell: process.platform === 'win32' });
   children.push(child);
   child.on('exit', (code) => {
     if (!closing && code && code !== 0) closeAll(code);

@@ -3,11 +3,14 @@ import { ArrowUpRight, Bell, BellRing, BookOpenText, CalendarDays, Check, Chevro
 import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, fetchTeamWeeklyStats, getApiBaseUrl, login, readToken } from '@/lib/api';
 import { loadWeeklyReports } from '@/lib/reports';
 import type { AttendanceSnapshot, ElectionUser, TeamWeeklyStat, WeeklyReportFeed } from '@/types';
+import { BongoCatCompanion } from '@/components/BongoCatCompanion';
 
 type View = 'dashboard' | 'ranking' | 'team' | 'reports';
+type QuickTask = { title: string; time: string };
 
 const REMINDER_STORAGE_KEY = 'lecpunch.election.reminders-enabled';
 const IMMERSIVE_STORAGE_KEY = 'lecpunch.election.immersive-enabled';
+const QUICK_TASK_STORAGE_KEY = 'lecpunch.election.quick-task';
 const reminderTimes = [
   { hour: 9, minute: 0, title: '开始今天的专注', body: '打开 LecPunch，开始一段有记录的学习时间。' },
   { hour: 13, minute: 0, title: '午后专注提醒', body: '休息结束后，继续完成今天最重要的一件事。' },
@@ -38,6 +41,14 @@ const getWeekKey = () => {
 
 const formatToday = () => new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date());
 const readStoredBoolean = (key: string, fallback: boolean) => localStorage.getItem(key) === null ? fallback : localStorage.getItem(key) === 'true';
+const readQuickTask = (): QuickTask | null => {
+  try {
+    const task = JSON.parse(localStorage.getItem(QUICK_TASK_STORAGE_KEY) || 'null') as QuickTask | null;
+    return task?.title && /^\d{2}:\d{2}$/.test(task.time) ? task : null;
+  } catch {
+    return null;
+  }
+};
 
 export const App = () => {
   const [user, setUser] = useState<ElectionUser | null>(null);
@@ -52,6 +63,8 @@ export const App = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [remindersEnabled, setRemindersEnabled] = useState(() => readStoredBoolean(REMINDER_STORAGE_KEY, true));
   const [immersive, setImmersive] = useState(() => readStoredBoolean(IMMERSIVE_STORAGE_KEY, false));
+  const [quickTask, setQuickTask] = useState<QuickTask | null>(readQuickTask);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
 
   const showDesktopReminder = async (title: string, body: string) => {
     if (!immersive) await window.lecpunchDesktop?.notify({ title, body });
@@ -86,6 +99,10 @@ export const App = () => {
   useEffect(() => { if (readToken()) void refresh(); }, []);
   useEffect(() => { localStorage.setItem(REMINDER_STORAGE_KEY, String(remindersEnabled)); }, [remindersEnabled]);
   useEffect(() => { localStorage.setItem(IMMERSIVE_STORAGE_KEY, String(immersive)); void window.lecpunchDesktop?.setImmersive(immersive); }, [immersive]);
+  useEffect(() => {
+    if (quickTask) localStorage.setItem(QUICK_TASK_STORAGE_KEY, JSON.stringify(quickTask));
+    else localStorage.removeItem(QUICK_TASK_STORAGE_KEY);
+  }, [quickTask]);
 
   useEffect(() => {
     if (!attendance?.hasActiveSession) return;
@@ -97,7 +114,11 @@ export const App = () => {
     if (!remindersEnabled || immersive) return;
     const tryReminder = () => {
       const now = new Date();
-      const reminder = reminderTimes.find((item) => item.hour === now.getHours() && item.minute === now.getMinutes());
+      const customReminder = quickTask ? (() => {
+        const [hour, minute] = quickTask.time.split(':').map(Number);
+        return { hour, minute, title: quickTask.title, body: `定时任务「${quickTask.title}」现在开始。` };
+      })() : null;
+      const reminder = [...reminderTimes, ...(customReminder ? [customReminder] : [])].find((item) => item.hour === now.getHours() && item.minute === now.getMinutes());
       if (!reminder) return;
       const key = `${now.toDateString()}-${reminder.hour}-${reminder.minute}`;
       if (localStorage.getItem('lecpunch.election.last-reminder') === key) return;
@@ -107,7 +128,7 @@ export const App = () => {
     tryReminder();
     const timer = window.setInterval(tryReminder, 30_000);
     return () => window.clearInterval(timer);
-  }, [immersive, remindersEnabled]);
+  }, [immersive, quickTask, remindersEnabled]);
 
   const handleAttendance = async () => {
     try {
@@ -138,7 +159,7 @@ export const App = () => {
   if (!user) return <LoginScreen loading={loading} notice={notice} onLogin={async (username, password) => { setLoading(true); try { setUser(await login(username, password)); await refresh(); } catch (error) { setNotice(error instanceof Error ? error.message : '登录失败'); setLoading(false); } }} />;
 
   const labels: Record<View, string> = { dashboard: '工作台', ranking: '打卡排行', team: '团队成员', reports: '成长报告' };
-  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><div className="profile-chip"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></div></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}</div></section></main>;
+  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><div className="profile-chip"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></div></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}</div></section><BongoCatCompanion attendanceActive={Boolean(attendance?.hasActiveSession)} immersive={immersive} onAttendance={() => void handleAttendance()} onToggleImmersive={toggleImmersive} onOpenSchedule={() => setScheduleOpen(true)} onOpenShop={() => setNotice('小猫商城正在筹备中，敬请期待。')} />{scheduleOpen ? <QuickSchedule initialTask={quickTask} onClose={() => setScheduleOpen(false)} onSave={(task) => { setQuickTask(task); setRemindersEnabled(true); setScheduleOpen(false); setNotice(`已设置「${task.title}」：每天 ${task.time} 提醒。`); }} /> : null}</main>;
 };
 
 const LoginScreen = ({ loading, notice, onLogin }: { loading: boolean; notice: string | null; onLogin: (username: string, password: string) => Promise<void> }) => {
@@ -173,3 +194,9 @@ const TeamPage = ({ teamStats }: { teamStats: TeamWeeklyStat[] }) => {
 const ReportsPage = ({ reports, connected }: { reports: WeeklyReportFeed | null; connected: boolean }) => <div className="page reports-page"><section className="welcome-row"><div><p className="eyebrow">GROWTH REPORTS</p><h1>成长<span>报告</span></h1><p>日报原文始终保留在成员自己的 GitHub 博客；桌面端只读取汇总与跳转链接。</p></div><div className="week-pill"><CalendarDays size={17} /><span>{reports?.weekKey ?? getWeekKey()}</span><i /></div></section>{connected && reports ? <section className="report-list">{reports.members.map((report) => <article className="member-report blue-card" key={report.studentId}><div className="report-avatar">{report.displayName.slice(0, 1)}</div><div className="member-report-main"><div><p className="eyebrow">{report.studentId}</p><h2>{report.displayName}</h2></div><p>{report.summary}</p><div className="report-meta"><span><BookOpenText size={14} />{report.dailyCount} 篇日报</span><span className={`status-${report.status}`}>{report.status === 'generated' ? '已生成' : report.status === 'missing' ? '缺少日报' : '等待处理'}</span></div></div>{report.url ? <a href={report.url} target="_blank" rel="noreferrer" className="open-report">打开报告 <ArrowUpRight size={16} /></a> : <span className="open-report disabled">报告尚未发布</span>}</article>)}</section> : <EmptyReportState />}</div>;
 const EmptyReportState = () => <section className="empty-report blue-card"><div className="empty-icon"><BookOpenText size={30} /></div><p className="eyebrow">REPORT SOURCE NOT CONNECTED</p><h2>等待本地周报管理软件发布清单</h2><p>配置统一 GitHub 管理仓库中的 <code>overview/current.json</code> 地址后，这里会显示本周汇总。</p><div className="manifest-code">VITE_REPORTS_MANIFEST_URL=https://raw.githubusercontent.com/...</div></section>;
 const EmptyData = ({ text }: { text: string }) => <p className="empty-data">{text}</p>;
+
+const QuickSchedule = ({ initialTask, onClose, onSave }: { initialTask: QuickTask | null; onClose: () => void; onSave: (task: QuickTask) => void }) => {
+  const [title, setTitle] = useState(initialTask?.title ?? '专注提醒');
+  const [time, setTime] = useState(initialTask?.time ?? '20:30');
+  return <div className="schedule-mask" role="dialog" aria-modal="true" aria-label="快速设置定时任务"><section className="schedule-dialog blue-card"><button className="schedule-close" onClick={onClose} aria-label="关闭"><X size={18} /></button><p className="eyebrow">QUICK SCHEDULE</p><h2>快速定时任务</h2><p>每天到点后，将以 Windows 原生通知提醒你。</p><label>任务名称<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={24} autoFocus /></label><label>提醒时间<input value={time} onChange={(event) => setTime(event.target.value)} type="time" /></label><button className="primary-button" onClick={() => onSave({ title: title.trim() || '专注提醒', time })}>保存并生效 <BellRing size={17} /></button></section></div>;
+};

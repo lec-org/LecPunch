@@ -1,6 +1,6 @@
 {
   "name": "@lecpunch/election",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "main": ".electron/main.js",
   "scripts": {
@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@lecpunch/shared": "workspace:*",
+    "easy-live2d": "^0.4.4",
     "lucide-react": "^1.7.0",
+    "pixi.js": "^8.18.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
@@ -25,7 +27,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react-swc": "^4.3.0",
     "electron": "^40.0.0",
-    "electron-builder": "^26.0.0",
     "electron-builder": "^26.0.0",
     "typescript": "^5.5.4",
     "vite": "^8.0.3"

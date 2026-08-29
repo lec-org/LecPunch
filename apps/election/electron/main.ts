@@ -1,5 +1,10 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, Notification, protocol, shell, Tray } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'lecpunch-assets', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+]);
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -83,6 +88,17 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  protocol.handle('lecpunch-assets', (request) => {
+    const requestUrl = new URL(request.url);
+    const requestedPath = decodeURIComponent(`${requestUrl.hostname}${requestUrl.pathname}`);
+    const relativePath = path.normalize(requestedPath).replace(/^([/\\])+/, '');
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      return new Response('Not found', { status: 404 });
+    }
+    const assetPath = path.join(app.getAppPath(), 'dist', relativePath);
+    return net.fetch(pathToFileURL(assetPath).toString());
+  });
+
   Menu.setApplicationMenu(null);
   createWindow();
   createTray();
