@@ -2,6 +2,10 @@ import { app, BrowserWindow, Menu, shell } from 'electron';
 import path from 'node:path';
 
 const createWindow = () => {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(__dirname, '..', 'resources', 'icon.ico');
+
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -19,6 +23,7 @@ const createWindow = () => {
         }
       : {}),
     backgroundColor: '#090e1d',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
