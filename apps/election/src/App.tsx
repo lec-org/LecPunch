@@ -58,14 +58,19 @@ export const App = () => {
       const [nextUser, nextAttendance, nextPoints, reportResult] = await Promise.all([
         fetchCurrentUser(),
         fetchAttendance(),
-        fetchPoints(),
+        // The deployed API may be upgraded independently from the desktop app.
+        // A missing points module must not invalidate an otherwise valid login.
+        fetchPoints().catch(() => null),
         loadWeeklyReports().catch(() => ({ feed: null, connected: false }))
       ]);
       setUser(nextUser);
       setAttendance(nextAttendance);
-      setPoints(nextPoints.totalPoints);
+      setPoints(nextPoints?.totalPoints ?? 0);
       setReports(reportResult.feed);
       setReportSourceConnected(reportResult.connected);
+      if (!nextPoints) {
+        setNotice('已登录。积分服务尚未部署，暂以 0 分显示。');
+      }
     } catch (error) {
       clearToken();
       setUser(null);
