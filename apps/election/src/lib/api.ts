@@ -3,19 +3,26 @@ import type { AttendanceSnapshot, ElectionUser } from '@/types';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:4000';
 const TOKEN_KEY = 'lecpunch.election.token';
 
+export const getApiBaseUrl = () => API_BASE_URL;
+
 export const readToken = () => localStorage.getItem(TOKEN_KEY);
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
 const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const token = readToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init.headers
+      }
+    });
+  } catch {
+    throw new Error(`无法连接 LecPunch 服务端（${API_BASE_URL}）。请先启动 API 服务后再登录。`);
+  }
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);

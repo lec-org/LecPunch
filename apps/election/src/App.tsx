@@ -19,7 +19,7 @@ import {
   UsersRound,
   X
 } from 'lucide-react';
-import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, login, readToken } from '@/lib/api';
+import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, getApiBaseUrl, login, readToken } from '@/lib/api';
 import { loadWeeklyReports } from '@/lib/reports';
 import type { AttendanceSnapshot, ElectionUser, WeeklyReportFeed } from '@/types';
 
@@ -145,7 +145,7 @@ const LoginScreen = ({ loading, notice, onLogin }: { loading: boolean; notice: s
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const submit = (event: FormEvent) => { event.preventDefault(); void onLogin(username, password); };
-  return <main className="app-shell login-shell"><div className="aurora aurora-one" /><div className="aurora aurora-two" /><section className="login-card glass-card"><div className="brand-mark"><Sparkles size={23} /></div><p className="eyebrow">LECPUNCH / ELECTION</p><h1>回到你的<br /><em>专注宇宙。</em></h1><p className="muted">一处掌握打卡、积分和每周成长轨迹。</p><form onSubmit={submit}><label>用户名<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="输入用户名" autoFocus /></label><label>密码<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" placeholder="输入密码" /></label>{notice ? <p className="form-error">{notice}</p> : null}<button className="primary-button" disabled={loading}>{loading ? '正在连接...' : '进入工作台'}<ArrowUpRight size={18} /></button></form><small>桌面端通过 LecPunch 服务端安全校验打卡状态。</small></section></main>;
+  return <main className="app-shell login-shell"><div className="aurora aurora-one" /><div className="aurora aurora-two" /><section className="login-card glass-card"><div className="brand-mark"><Sparkles size={23} /></div><p className="eyebrow">LECPUNCH / ELECTION</p><h1>回到你的<br /><em>专注宇宙。</em></h1><p className="muted">一处掌握打卡、积分和每周成长轨迹。</p><form onSubmit={submit}><label>用户名<input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="输入用户名" autoFocus /></label><label>密码<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" placeholder="输入密码" /></label>{notice ? <p className="form-error">{notice}</p> : null}<button className="primary-button" disabled={loading}>{loading ? '正在连接...' : '进入工作台'}<ArrowUpRight size={18} /></button></form><small>认证服务：{getApiBaseUrl()}</small></section></main>;
 };
 
 const Sidebar = ({ active, open, onClose, onSelect, user, onLogout }: { active: View; open: boolean; onClose: () => void; onSelect: (view: View) => void; user: ElectionUser; onLogout: () => void }) => {
