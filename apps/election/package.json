@@ -1,0 +1,30 @@
+{
+  "name": "@lecpunch/election",
+  "version": "0.1.0",
+  "private": true,
+  "main": ".electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:electron": "tsc -p tsconfig.electron.json --watch",
+    "dev:renderer": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1",
+    "build": "tsc -p tsconfig.electron.json && tsc -b && node ./node_modules/vite/bin/vite.js build",
+    "preview": "node ./node_modules/vite/bin/vite.js preview",
+    "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -b",
+    "start": "node ./node_modules/electron/cli.js ."
+  },
+  "dependencies": {
+    "@lecpunch/shared": "workspace:*",
+    "lucide-react": "^1.7.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react-swc": "^4.3.0",
+    "electron": "^40.0.0",
+    "typescript": "^5.5.4",
+    "vite": "^8.0.3"
+  }
+}

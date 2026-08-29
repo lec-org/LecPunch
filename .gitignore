@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 .next/
+apps/election/.electron/
 
 # Logs
 npm-debug.log*
