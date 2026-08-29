@@ -14,6 +14,7 @@ import {
 } from '@lecpunch/shared';
 import { getShanghaiDateRange, getWeekKey } from '../../common/utils/time.util';
 import type { AuthUser } from '../auth/types/auth-user.type';
+import { PointsService } from '../points/points.service';
 
 @Injectable()
 export class AttendanceService {
@@ -22,7 +23,8 @@ export class AttendanceService {
     private readonly attendanceModel: Model<AttendanceSessionDocument>,
     private readonly networkPolicyService: NetworkPolicyService,
     private readonly usersService: UsersService,
-    @Optional() private readonly configService?: ConfigService
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly pointsService?: PointsService
   ) {}
 
   async getCurrentSession(userId: string) {
@@ -125,6 +127,7 @@ export class AttendanceService {
       activeSession.checkOutAt = checkOutAt;
       activeSession.sourceIpAtCheckOut = clientIp;
       await activeSession.save();
+      await this.syncSessionPoints(activeSession, durationSeconds);
       return activeSession;
     }
 
@@ -146,6 +149,7 @@ export class AttendanceService {
     session.checkOutAt = checkOutAt;
     session.sourceIpAtCheckOut = clientIp;
     await session.save();
+    await this.syncSessionPoints(session, this.getCreditedSeconds(session));
     return session;
   }
 
@@ -191,6 +195,7 @@ export class AttendanceService {
 
     session.lastKeepaliveAt = now;
     await session.save();
+    await this.syncSessionPoints(session, this.getCreditedSeconds(session));
     return session;
   }
 
@@ -354,6 +359,7 @@ export class AttendanceService {
     session.invalidReason = 'heartbeat_timeout';
     session.checkOutAt ??= new Date();
     await session.save();
+    await this.syncSessionPoints(session, 0);
     return null;
   }
 
@@ -451,6 +457,7 @@ export class AttendanceService {
       session.sourceIpAtCheckOut = sourceIpAtCheckOut;
     }
     await session.save();
+    await this.syncSessionPoints(session, 0);
     return true;
   }
 
@@ -469,6 +476,16 @@ export class AttendanceService {
     return new BadRequestException({
       code: ERROR_CODES.ATTENDANCE_SESSION_INVALIDATED,
       message: '当前打卡已失效，请重新上卡'
+    });
+  }
+
+  private async syncSessionPoints(session: AttendanceSessionDocument, creditedSeconds: number) {
+    await this.pointsService?.syncAttendancePoints({
+      teamId: session.teamId,
+      userId: session.userId,
+      attendanceSessionId: session.id,
+      creditedSeconds,
+      isValid: session.status === 'completed' || session.status === 'active'
     });
   }
 }

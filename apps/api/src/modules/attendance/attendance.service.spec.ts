@@ -25,6 +25,9 @@ describe('AttendanceService', () => {
     findByIds: vi.fn(),
     getMemberKey: vi.fn((id: string) => `member-key-${id}`)
   };
+  const pointsService = {
+    syncAttendancePoints: vi.fn().mockResolvedValue(0)
+  };
 
   const attendanceModel = {
     create,
@@ -163,6 +166,36 @@ describe('AttendanceService', () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 
+  it('synchronizes one point per fully credited minute during keepalive', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-10T00:02:00.000Z'));
+
+    const session = {
+      id: 'session-1',
+      teamId: 'team-1',
+      userId: 'user-1',
+      checkInAt: new Date('2026-04-10T00:00:00.000Z'),
+      lastKeepaliveAt: new Date('2026-04-10T00:01:00.000Z'),
+      lastCreditedAt: new Date('2026-04-10T00:01:00.000Z'),
+      creditedSeconds: 119,
+      status: 'active',
+      weekKey: '2026-04-07',
+      save: vi.fn().mockResolvedValue(undefined)
+    } as any;
+    findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(session) });
+    service = new AttendanceService(attendanceModel, networkPolicyService as any, usersService as any, undefined, pointsService as any);
+
+    await service.keepAlive(user, '127.0.0.1');
+
+    expect(pointsService.syncAttendancePoints).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      userId: 'user-1',
+      attendanceSessionId: 'session-1',
+      creditedSeconds: 179,
+      isValid: true
+    });
+  });
+
   it('stops accumulation when keepalive resumes after heartbeat timeout and does not backfill the gap', async () => {
     vi.useFakeTimers();
     const checkInAt = new Date('2026-04-10T00:00:00.000Z');
@@ -283,6 +316,32 @@ describe('AttendanceService', () => {
     expect(result.durationSeconds).toBe(0);
     expect(result.invalidReason).toBe('overtime_5h');
     expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets attendance points when a session is invalidated', async () => {
+    const session = {
+      id: 'session-1',
+      teamId: 'team-1',
+      userId: 'user-1',
+      checkInAt: new Date(Date.now() - ATTENDANCE_MAX_SECONDS * 1000),
+      lastKeepaliveAt: new Date(),
+      lastCreditedAt: new Date(),
+      creditedSeconds: ATTENDANCE_MAX_SECONDS - 1,
+      status: 'active',
+      save: vi.fn().mockResolvedValue(undefined)
+    } as any;
+    findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(session) });
+    service = new AttendanceService(attendanceModel, networkPolicyService as any, usersService as any, undefined, pointsService as any);
+
+    await service.checkOut(user, '127.0.0.1');
+
+    expect(pointsService.syncAttendancePoints).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      userId: 'user-1',
+      attendanceSessionId: 'session-1',
+      creditedSeconds: 0,
+      isValid: false
+    });
   });
 
   it('builds record date filters using Asia/Shanghai day boundaries', async () => {

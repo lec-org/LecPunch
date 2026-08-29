@@ -32,6 +32,9 @@ describe('UsersService', () => {
   const attendanceModel = {
     deleteMany: attendanceDeleteMany
   } as any;
+  const pointsService = {
+    deleteUserPoints: vi.fn().mockResolvedValue(undefined)
+  } as any;
   const configService = {
     get: vi.fn().mockReturnValue('test-secret')
   } as any;
@@ -41,7 +44,7 @@ describe('UsersService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     attendanceDeleteMany.mockReturnValue({ exec: attendanceDeleteManyExec });
-    service = new UsersService(userModel, attendanceModel, configService);
+    service = new UsersService(userModel, attendanceModel, configService, pointsService);
   });
 
   describe('updateProfile - avatar mutual exclusion', () => {
@@ -197,6 +200,7 @@ describe('UsersService', () => {
       await expect(service.adminDeleteMember(adminUser, 'member-1')).resolves.toBeUndefined();
 
       expect(attendanceDeleteMany).toHaveBeenCalledWith({ userId: 'member-1' });
+      expect(pointsService.deleteUserPoints).toHaveBeenCalledWith('team-1', 'member-1');
       expect(findByIdAndDelete).toHaveBeenCalledWith('member-1');
     });
   });

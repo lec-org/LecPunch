@@ -3,6 +3,7 @@ export * from './types/team';
 export * from './types/attendance';
 export * from './types/member-eligibility';
 export * from './types/notification';
+export * from './types/points';
 export * from './types/stats';
 export * from './types/team-event';
 export * from './types/team-ledger';

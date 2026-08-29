@@ -14,6 +14,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { MemberEligibilityModule } from './modules/member-eligibility/member-eligibility.module';
 import { TeamEventsModule } from './modules/team-events/team-events.module';
 import { TeamLedgerModule } from './modules/team-ledger/team-ledger.module';
+import { PointsModule } from './modules/points/points.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { TeamLedgerModule } from './modules/team-ledger/team-ledger.module';
     MemberEligibilityModule,
     TeamEventsModule,
     TeamLedgerModule,
+    PointsModule,
     AttendanceModule,
     RecordsModule,
     StatsModule,

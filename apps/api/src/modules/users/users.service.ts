@@ -8,6 +8,7 @@ import { ERROR_CODES, UserRole, UserStatus } from '@lecpunch/shared';
 import * as bcrypt from 'bcrypt';
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { AuthUser } from '../auth/types/auth-user.type';
+import { PointsService } from '../points/points.service';
 
 export interface CreateUserInput {
   username: string;
@@ -38,7 +39,8 @@ export class UsersService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(AttendanceSession.name)
     private readonly attendanceModel: Model<AttendanceSessionDocument>,
-    private readonly configService: ConfigService
+    private readonly configService: ConfigService,
+    private readonly pointsService: PointsService
   ) {}
 
   create(payload: CreateUserInput) {
@@ -207,6 +209,7 @@ export class UsersService {
     }
 
     await this.attendanceModel.deleteMany({ userId: member.id }).exec();
+    await this.pointsService.deleteUserPoints(member.teamId, member.id);
 
     const deleted = await this.userModel.findByIdAndDelete(memberId).exec();
     if (!deleted) {
