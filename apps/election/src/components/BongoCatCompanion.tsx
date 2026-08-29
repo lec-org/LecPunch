@@ -69,7 +69,8 @@ export const BongoCatCompanion = ({
   onAttendance,
   onToggleImmersive,
   onOpenSchedule,
-  onOpenShop
+  onOpenShop,
+  desktop = false
 }: {
   attendanceActive: boolean;
   immersive: boolean;
@@ -77,11 +78,12 @@ export const BongoCatCompanion = ({
   onToggleImmersive: () => void;
   onOpenSchedule: () => void;
   onOpenShop: () => void;
+  desktop?: boolean;
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelRef = useRef<Live2DSprite | null>(null);
-  const pointerRef = useRef<{ id: number; startX: number; startY: number; origin: Position; moved: boolean } | null>(null);
+  const pointerRef = useRef<{ id: number; startX: number; startY: number; lastX: number; lastY: number; origin: Position; moved: boolean } | null>(null);
   const [position, setPosition] = useState<Position>(readInitialPosition);
   const [menuOpen, setMenuOpen] = useState(false);
   const [leftKey, setLeftKey] = useState<string | null>(null);
@@ -93,6 +95,7 @@ export const BongoCatCompanion = ({
     let app: Application | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let cancelled = false;
+    let initialized = false;
 
     const resizeModel = () => {
       const model = modelRef.current;
@@ -113,9 +116,18 @@ export const BongoCatCompanion = ({
 
         app = new Application();
         await app.init({ view: canvas, resizeTo: host, backgroundAlpha: 0, autoDensity: true, resolution: devicePixelRatio });
+        initialized = true;
+        // React development mode deliberately mounts effects twice. Stop the
+        // first asynchronous renderer before it can create a second WebGL model.
+        if (cancelled) {
+          app.destroy();
+          initialized = false;
+          return;
+        }
         const response = await fetch(`${assetBase}cat.model3.json`);
         if (!response.ok) throw new Error('Live2D 模型清单不可访问');
         const modelJSON = await response.json();
+        if (cancelled) return;
         const modelSetting = new CubismSetting({ modelJSON });
         modelSetting.redirectPath(({ file }) => `${assetBase}${file}`);
         const model = new Live2DSprite({ modelSetting, ticker: Ticker.shared });
@@ -142,7 +154,7 @@ export const BongoCatCompanion = ({
       resizeObserver?.disconnect();
       modelRef.current?.destroy();
       modelRef.current = null;
-      app?.destroy();
+      if (initialized) app?.destroy();
     };
   }, []);
 
@@ -162,21 +174,13 @@ export const BongoCatCompanion = ({
   }, []);
 
   useEffect(() => {
-    const press = (event: KeyboardEvent) => {
-      const key = mapKey(event);
+    const updateKey = (kind: 'keydown' | 'keyup', key: string | null) => {
       if (!key) return;
       const hand = getHand(key);
-      if (hand === 'left') setLeftKey(key);
-      else setRightKey(key);
-      modelRef.current?.setParameterValueById(hand === 'left' ? 'CatParamLeftHandDown' : 'CatParamRightHandDown', 1);
-    };
-    const release = (event: KeyboardEvent) => {
-      const key = mapKey(event);
-      if (!key) return;
-      const hand = getHand(key);
-      if (hand === 'left') setLeftKey((current) => current === key ? null : current);
-      else setRightKey((current) => current === key ? null : current);
-      modelRef.current?.setParameterValueById(hand === 'left' ? 'CatParamLeftHandDown' : 'CatParamRightHandDown', 0);
+      const pressed = kind === 'keydown';
+      if (hand === 'left') setLeftKey((current) => pressed ? key : current === key ? null : current);
+      else setRightKey((current) => pressed ? key : current === key ? null : current);
+      modelRef.current?.setParameterValueById(hand === 'left' ? 'CatParamLeftHandDown' : 'CatParamRightHandDown', pressed ? 1 : 0);
     };
     const releaseAll = () => {
       setLeftKey(null);
@@ -184,15 +188,21 @@ export const BongoCatCompanion = ({
       modelRef.current?.setParameterValueById('CatParamLeftHandDown', 0);
       modelRef.current?.setParameterValueById('CatParamRightHandDown', 0);
     };
-    window.addEventListener('keydown', press);
-    window.addEventListener('keyup', release);
+    const press = (event: KeyboardEvent) => updateKey('keydown', mapKey(event));
+    const release = (event: KeyboardEvent) => updateKey('keyup', mapKey(event));
+    const unlistenDesktop = desktop ? window.lecpunchDesktop?.onBongoKey((event) => updateKey(event.kind, event.key)) : undefined;
+    if (!desktop) {
+      window.addEventListener('keydown', press);
+      window.addEventListener('keyup', release);
+    }
     window.addEventListener('blur', releaseAll);
     return () => {
+      unlistenDesktop?.();
       window.removeEventListener('keydown', press);
       window.removeEventListener('keyup', release);
       window.removeEventListener('blur', releaseAll);
     };
-  }, []);
+  }, [desktop]);
 
   useEffect(() => {
     const keepInsideScreen = () => setPosition((current) => clampPosition(current));
@@ -207,7 +217,7 @@ export const BongoCatCompanion = ({
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('button')) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    pointerRef.current = { id: event.pointerId, startX: event.clientX, startY: event.clientY, origin: position, moved: false };
+    pointerRef.current = { id: event.pointerId, startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY, origin: position, moved: false };
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -216,7 +226,13 @@ export const BongoCatCompanion = ({
     const dx = event.clientX - pointer.startX;
     const dy = event.clientY - pointer.startY;
     if (Math.hypot(dx, dy) > 6) pointer.moved = true;
-    setPosition(clampPosition({ x: pointer.origin.x + dx, y: pointer.origin.y + dy }));
+    if (desktop) {
+      void window.lecpunchDesktop?.moveCompanionBy({ x: event.clientX - pointer.lastX, y: event.clientY - pointer.lastY });
+      pointer.lastX = event.clientX;
+      pointer.lastY = event.clientY;
+    } else {
+      setPosition(clampPosition({ x: pointer.origin.x + dx, y: pointer.origin.y + dy }));
+    }
   };
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -224,7 +240,7 @@ export const BongoCatCompanion = ({
     if (!pointer || pointer.id !== event.pointerId) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
     pointerRef.current = null;
-    if (pointer.moved) {
+    if (pointer.moved && !desktop) {
       setPosition((current) => {
         persistPosition(current);
         return current;
@@ -241,7 +257,7 @@ export const BongoCatCompanion = ({
     { label: '小猫商城', icon: <ShoppingBag size={18} />, onClick: onOpenShop }
   ];
 
-  return <aside className={`bongo-companion ${menuOpen ? 'menu-open' : ''}`} style={{ left: position.x, top: position.y }} aria-label="LecPunch 小猫助手">
+  return <aside className={`bongo-companion ${desktop ? 'desktop-companion' : ''} ${menuOpen ? 'menu-open' : ''}`} style={desktop ? undefined : { left: position.x, top: position.y }} aria-label="LecPunch 小猫助手">
     <div className="cat-orbit" aria-hidden="true" />
     <div className="cat-action-fan">{actions.map((action, index) => <button className={`cat-action cat-action-${index + 1}`} key={action.label} onClick={() => { action.onClick(); setMenuOpen(false); }} title={action.label}><span>{action.icon}</span><em>{action.label}</em></button>)}</div>
     <div className="bongo-stage" ref={hostRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} role="button" tabIndex={0} aria-label="拖动小猫移动，单击打开快捷功能">

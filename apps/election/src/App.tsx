@@ -3,7 +3,6 @@ import { ArrowUpRight, Bell, BellRing, BookOpenText, CalendarDays, Check, Chevro
 import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, fetchTeamWeeklyStats, getApiBaseUrl, login, readToken } from '@/lib/api';
 import { loadWeeklyReports } from '@/lib/reports';
 import type { AttendanceSnapshot, ElectionUser, TeamWeeklyStat, WeeklyReportFeed } from '@/types';
-import { BongoCatCompanion } from '@/components/BongoCatCompanion';
 
 type View = 'dashboard' | 'ranking' | 'team' | 'reports';
 type QuickTask = { title: string; time: string };
@@ -130,6 +129,19 @@ export const App = () => {
     return () => window.clearInterval(timer);
   }, [immersive, quickTask, remindersEnabled]);
 
+  useEffect(() => {
+    const stopListening = window.lecpunchDesktop?.onMainAction((action) => {
+      if (action === 'refresh') {
+        void refresh();
+      } else if (action === 'schedule') {
+        setScheduleOpen(true);
+      } else {
+        setNotice('小猫商城正在筹备中，敬请期待。');
+      }
+    });
+    return () => stopListening?.();
+  }, []);
+
   const handleAttendance = async () => {
     try {
       if (attendance?.hasActiveSession) {
@@ -159,7 +171,7 @@ export const App = () => {
   if (!user) return <LoginScreen loading={loading} notice={notice} onLogin={async (username, password) => { setLoading(true); try { setUser(await login(username, password)); await refresh(); } catch (error) { setNotice(error instanceof Error ? error.message : '登录失败'); setLoading(false); } }} />;
 
   const labels: Record<View, string> = { dashboard: '工作台', ranking: '打卡排行', team: '团队成员', reports: '成长报告' };
-  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><div className="profile-chip"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></div></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}</div></section><BongoCatCompanion attendanceActive={Boolean(attendance?.hasActiveSession)} immersive={immersive} onAttendance={() => void handleAttendance()} onToggleImmersive={toggleImmersive} onOpenSchedule={() => setScheduleOpen(true)} onOpenShop={() => setNotice('小猫商城正在筹备中，敬请期待。')} />{scheduleOpen ? <QuickSchedule initialTask={quickTask} onClose={() => setScheduleOpen(false)} onSave={(task) => { setQuickTask(task); setRemindersEnabled(true); setScheduleOpen(false); setNotice(`已设置「${task.title}」：每天 ${task.time} 提醒。`); }} /> : null}</main>;
+  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><div className="profile-chip"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></div></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}</div></section>{scheduleOpen ? <QuickSchedule initialTask={quickTask} onClose={() => setScheduleOpen(false)} onSave={(task) => { setQuickTask(task); setRemindersEnabled(true); setScheduleOpen(false); setNotice(`已设置「${task.title}」：每天 ${task.time} 提醒。`); }} /> : null}</main>;
 };
 
 const LoginScreen = ({ loading, notice, onLogin }: { loading: boolean; notice: string | null; onLogin: (username: string, password: string) => Promise<void> }) => {

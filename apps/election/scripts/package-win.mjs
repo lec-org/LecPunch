@@ -6,7 +6,7 @@ import path from 'node:path';
 const command = (name) => (process.platform === 'win32' ? `${name}.cmd` : name);
 
 const run = (file, args, options = {}) => new Promise((resolve, reject) => {
-  const child = spawn(file, args, { stdio: 'inherit', ...options });
+  const child = spawn(file, args, { stdio: 'inherit', shell: process.platform === 'win32', ...options });
   child.on('error', reject);
   child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`${file} exited with code ${code}`)));
 });

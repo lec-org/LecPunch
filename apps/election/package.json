@@ -1,6 +1,6 @@
 {
   "name": "@lecpunch/election",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "main": ".electron/main.js",
   "scripts": {
@@ -19,7 +19,8 @@
     "lucide-react": "^1.7.0",
     "pixi.js": "^8.18.1",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "uiohook-napi": "1.5.5"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
@@ -40,9 +41,15 @@
     "files": [
       "dist/**/*",
       ".electron/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/uiohook-napi/**/*",
+      "node_modules/node-gyp-build/**/*"
     ],
     "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*"
+    ],
     "extraResources": [
       {
         "from": "resources/icon.ico",

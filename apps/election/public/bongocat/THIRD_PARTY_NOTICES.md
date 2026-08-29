@@ -27,3 +27,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Live2D Cubism Core
+
+`live2dcubismcore.min.js` is Redistributable Code from Live2D Cubism Core,
+copyright 2019 Live2D Inc. It is distributed under the Live2D proprietary
+software license agreement: https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html

@@ -126,19 +126,22 @@ importers:
         version: link:../../packages/shared
       easy-live2d:
         specifier: ^0.4.4
-        version: 0.4.4(eslint@8.57.1)(pixi.js@8.20.1)
+        version: 0.4.4(eslint@8.57.1)(pixi.js@8.18.1)
       lucide-react:
         specifier: ^1.7.0
         version: 1.7.0(react@19.2.4)
       pixi.js:
         specifier: ^8.18.1
-        version: 8.20.1
+        version: 8.18.1
       react:
         specifier: ^19.2.4
         version: 19.2.4
       react-dom:
         specifier: ^19.2.4
         version: 19.2.4(react@19.2.4)
+      uiohook-napi:
+        specifier: 1.5.5
+        version: 1.5.5
     devDependencies:
       '@types/node':
         specifier: ^25.5.0
@@ -1771,12 +1774,12 @@ packages:
     resolution: {integrity: sha512-nezytU2pw587fQstUu1AsJZDVEynjskwOL+kibwcdxsMBFqPsFFNA7xl0ii/gXuDi6M0xj3mfRJj8pBSc2jCfA==}
     dev: false
 
-  /@pixi/sound@6.0.1(pixi.js@8.20.1):
+  /@pixi/sound@6.0.1(pixi.js@8.18.1):
     resolution: {integrity: sha512-hpFlQSScAR2L/CsEoIvDi7s1oGsu8y9Zd742Vd3982N+q3IF2vFuIfV9HN4ryjlGnhCT8yBlEgs1gp4G9Rt9TA==}
     peerDependencies:
       pixi.js: ^8.0.0
     dependencies:
-      pixi.js: 8.20.1
+      pixi.js: 8.18.1
     dev: false
 
   /@pkgr/core@0.3.6:
@@ -4716,11 +4719,11 @@ packages:
     resolution: {integrity: sha512-vnS4AVwp1KHAF13i1vp1/2D5evWy3k5u/iW/B81QVsUZtV8cv2tU0b2VNFlqvh4kYwrFMDdjPCfAmfyJW9y14Q==}
     dev: false
 
-  /easy-live2d@0.4.4(eslint@8.57.1)(pixi.js@8.20.1):
+  /easy-live2d@0.4.4(eslint@8.57.1)(pixi.js@8.18.1):
     resolution: {integrity: sha512-3/PNWXng0vJcNm4y7pj6Rkux6KA6t/ZaSx50uVEDUpO9a50A+AGLRdG0E5vYKlFpWTOeZ/NxaL497CpXwJ20BQ==}
     engines: {node: ^18.0.0 || >=20.0.0}
     dependencies:
-      '@pixi/sound': 6.0.1(pixi.js@8.20.1)
+      '@pixi/sound': 6.0.1(pixi.js@8.18.1)
       eslint-plugin-format: 2.0.1(eslint@8.57.1)
     transitivePeerDependencies:
       - eslint
@@ -6702,8 +6705,8 @@ packages:
       lines-and-columns: 1.2.4
     dev: true
 
-  /parse-svg-path@0.2.0:
-    resolution: {integrity: sha512-Tf7FFIrguPKQwzD4pWnYkR2VOv3raoHeKED80Bm+BYHI3KxC8KsgsGC5+fSMzAGDA6UEk4bHvmi+RsjmL3khpg==}
+  /parse-svg-path@0.1.2:
+    resolution: {integrity: sha512-JyPSBnkTJ0AI8GGJLfMXvKq42cj5c006fnLz6fXy6zfoVjJizi8BNTpu8on8ziI1cKy9d9DGNuY17Ce7wuejpQ==}
     dev: false
 
   /parse5@7.3.0:
@@ -6808,8 +6811,8 @@ packages:
     engines: {node: '>=12'}
     dev: true
 
-  /pixi.js@8.20.1:
-    resolution: {integrity: sha512-akLVBMLvQbaEViqsmVraK0Njer1q4Q4lm4iNKuzvBiFrV8q+6/+HluJN3sWIwO663IBeQtUUS/CaXFJZs6ffXQ==}
+  /pixi.js@8.18.1:
+    resolution: {integrity: sha512-6LUPWYgulZhp/w4kam2XHXB0QedISZIqrJbRdHLLQ3csn5a38uzKxAp6B5j6s89QFYaIJbg95kvgTRcbgpO1ow==}
     dependencies:
       '@pixi/colord': 2.9.6
       '@types/earcut': 3.0.0
@@ -6819,7 +6822,7 @@ packages:
       eventemitter3: 5.0.4
       gifuct-js: 2.1.2
       ismobilejs: 1.1.1
-      parse-svg-path: 0.2.0
+      parse-svg-path: 0.1.2
       tiny-lru: 11.4.7
     dev: false
 
@@ -8181,6 +8184,14 @@ packages:
   /uint8array-extras@1.5.0:
     resolution: {integrity: sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==}
     engines: {node: '>=18'}
+    dev: false
+
+  /uiohook-napi@1.5.5:
+    resolution: {integrity: sha512-oSlTdnECw2GBfsJPTbBQBeE4v/EXP0EZmX6BJq5nzH/JgFaBE8JpFwEA/kLhiEP7HxQw28FViWiYgdIZzWuuJQ==}
+    engines: {node: '>= 16'}
+    requiresBuild: true
+    dependencies:
+      node-gyp-build: 4.8.4
     dev: false
 
   /undici-types@7.18.2:
