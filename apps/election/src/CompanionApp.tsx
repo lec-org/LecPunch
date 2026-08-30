@@ -18,11 +18,13 @@ export const CompanionApp = () => {
   };
 
   useEffect(() => {
+    document.documentElement.classList.add('companion-document');
     document.body.classList.add('companion-body');
     void refreshAttendance();
     void window.lecpunchDesktop?.getCompanionSettings().then((settings) => setCatScale(settings.scale));
     const timer = window.setInterval(() => void refreshAttendance(), 30_000);
     return () => {
+      document.documentElement.classList.remove('companion-document');
       document.body.classList.remove('companion-body');
       window.clearInterval(timer);
     };

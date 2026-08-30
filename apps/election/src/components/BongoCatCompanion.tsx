@@ -271,7 +271,9 @@ export const BongoCatCompanion = ({
     <div className="cat-action-fan">{actions.map((action, index) => <button className={`cat-action cat-action-${index + 1}`} key={action.label} onClick={() => { action.onClick(); setMenuOpen(false); }} title={action.label}><span>{action.icon}</span><em>{action.label}</em></button>)}</div>
     {desktop && settingsOpen ? <section className="cat-settings-panel" onPointerDown={(event) => event.stopPropagation()} aria-label="小猫设置">
       <div><strong>小猫设置</strong><button onClick={onToggleSettings} aria-label="关闭小猫设置">×</button></div>
-      <p>显示大小</p><div className="cat-size-options">{[[0.8, '小'], [1, '标准'], [1.2, '大']].map(([scale, label]) => <button key={String(scale)} className={catScale === scale ? 'active' : ''} onClick={() => onSetCatScale?.(Number(scale))}>{label}</button>)}</div>
+      <p className="cat-size-label"><span>显示大小</span><strong>{Math.round(catScale * 100)}%</strong></p>
+      <input className="cat-size-slider" type="range" min="70" max="130" step="1" value={Math.round(catScale * 100)} onChange={(event) => onSetCatScale?.(Number(event.target.value) / 100)} style={{ background: `linear-gradient(90deg, #24a8e5 ${((catScale - 0.7) / 0.6) * 100}%, #c7e6f4 ${((catScale - 0.7) / 0.6) * 100}%)` }} aria-label="调整小猫显示大小" />
+      <div className="cat-size-marks" aria-hidden="true"><span>70%</span><span>100%</span><span>130%</span></div>
       <button className="cat-settings-row" onClick={() => onSetVisible?.(false)}><MonitorOff size={15} /><span>隐藏桌面小猫</span></button>
       <button className="cat-settings-row" onClick={onOpenFocusAssist}><ExternalLink size={15} /><span>打开 Windows 专注助手</span></button>
     </section> : null}

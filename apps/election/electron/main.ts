@@ -19,7 +19,11 @@ let companionSettings: CompanionSettings = { scale: 1, visible: true };
 
 const companionSettingsPath = () => path.join(app.getPath('userData'), 'companion-settings.json');
 const normalizeCompanionSettings = (settings: Partial<CompanionSettings>): CompanionSettings => ({
-  scale: [0.8, 1, 1.2].includes(Number(settings.scale)) ? Number(settings.scale) : companionSettings.scale,
+  // The desktop control is a continuous slider. Clamp persisted values too so a
+  // manually edited preference file can never create an impractically sized pet.
+  scale: Number.isFinite(Number(settings.scale))
+    ? Math.round(Math.max(0.7, Math.min(1.3, Number(settings.scale))) * 100) / 100
+    : companionSettings.scale,
   visible: typeof settings.visible === 'boolean' ? settings.visible : companionSettings.visible
 });
 const loadCompanionSettings = () => {
@@ -102,13 +106,14 @@ const createWindow = () => {
     ...(process.platform === 'win32'
       ? {
           titleBarOverlay: {
-            color: '#0b1020',
-            symbolColor: '#e7ecff',
+            // Keep the native caption buttons visually merged with the blue-white UI.
+            color: '#edf8ff',
+            symbolColor: '#22557f',
             height: 36
           }
         }
       : {}),
-    backgroundColor: '#090e1d',
+    backgroundColor: '#edf8ff',
     icon: getIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
