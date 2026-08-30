@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('lecpunchDesktop', {
   isPackaged: !process.defaultApp,
   notify: (payload: { title: string; body: string }) => ipcRenderer.invoke('desktop:notify', payload),
   hideToTray: () => ipcRenderer.invoke('desktop:hide-to-tray'),
-  setImmersive: (enabled: boolean) => ipcRenderer.invoke('desktop:set-immersive', enabled),
+  setImmersive: (enabled: boolean) => ipcRenderer.invoke('desktop:set-immersive', enabled) as Promise<{ enabled: boolean; managedApps: string[]; message: string }>,
   onMainImmersive: (callback: (enabled: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, enabled: boolean) => callback(enabled);
     ipcRenderer.on('desktop:main-immersive', listener);

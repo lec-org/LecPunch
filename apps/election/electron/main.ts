@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, shell, Tray } from 'electron';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,7 +16,10 @@ let isQuitting = false;
 const COMPANION_BASE_WIDTH = 560;
 const COMPANION_BASE_HEIGHT = 390;
 type CompanionSettings = { scale: number; visible: boolean };
+type QuietNotificationResult = { enabled: boolean; managedApps: string[]; message: string };
 let companionSettings: CompanionSettings = { scale: 1, visible: true };
+let quietNotificationConsentGranted = false;
+const quietNotificationBackup = new Map<string, string | null>();
 
 const companionSettingsPath = () => path.join(app.getPath('userData'), 'companion-settings.json');
 const normalizeCompanionSettings = (settings: Partial<CompanionSettings>): CompanionSettings => ({
@@ -34,6 +38,81 @@ const loadCompanionSettings = () => {
   }
 };
 const saveCompanionSettings = () => fs.writeFileSync(companionSettingsPath(), JSON.stringify(companionSettings));
+const quietNotificationSettingsPath = () => path.join(app.getPath('userData'), 'quiet-notification-settings.json');
+const loadQuietNotificationSettings = () => {
+  try {
+    const saved = JSON.parse(fs.readFileSync(quietNotificationSettingsPath(), 'utf8')) as { consentGranted?: boolean; backup?: Record<string, string | null> };
+    quietNotificationConsentGranted = saved.consentGranted === true;
+    Object.entries(saved.backup ?? {}).forEach(([key, value]) => quietNotificationBackup.set(key, value));
+  } catch {
+    // First launch has no notification changes to restore.
+  }
+};
+const saveQuietNotificationSettings = () => fs.writeFileSync(quietNotificationSettingsPath(), JSON.stringify({
+  consentGranted: quietNotificationConsentGranted,
+  backup: Object.fromEntries(quietNotificationBackup)
+}));
+const runReg = (args: string[]) => new Promise<{ stdout: string }>((resolve, reject) => {
+  execFile('reg.exe', args, { windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+    if (error) reject(error);
+    else resolve({ stdout });
+  });
+});
+const notificationSettingsRoot = 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings';
+const quietAppKeyPattern = /(wechat|weixin|(?:tencent.*)?qq)/i;
+const findQuietAppNotificationKeys = async () => {
+  const { stdout } = await runReg(['query', notificationSettingsRoot, '/s']);
+  return [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.startsWith('HKEY_CURRENT_USER\\') && quietAppKeyPattern.test(line)))];
+};
+const readEnabledValue = async (key: string) => {
+  try {
+    const { stdout } = await runReg(['query', key, '/v', 'Enabled']);
+    const match = stdout.match(/Enabled\s+REG_DWORD\s+(0x[\da-f]+)/i);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+};
+const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotificationResult> => {
+  if (process.platform !== 'win32') return { enabled: false, managedApps: [], message: '该功能仅支持 Windows。' };
+  if (enabled && !quietNotificationConsentGranted) {
+    const promptOptions = {
+      type: 'question' as const,
+      buttons: ['取消', '授权并开启'] as string[],
+      defaultId: 1,
+      cancelId: 0,
+      title: '授权管理 QQ / 微信通知',
+      message: '允许 LecPunch 管理 Windows 已登记的 QQ、微信通知吗？',
+      detail: '开启后会暂时关闭这些应用的 Windows 通知横幅与提示音；退出免提示模式时会恢复你此前的设置。不会读取聊天内容、账号或文件。'
+    };
+    const parentWindow = mainWindow ?? companionWindow;
+    const result = parentWindow ? await dialog.showMessageBox(parentWindow, promptOptions) : await dialog.showMessageBox(promptOptions);
+    if (result.response !== 1) return { enabled: false, managedApps: [], message: '未授予 QQ、微信通知管理权限。' };
+    quietNotificationConsentGranted = true;
+    saveQuietNotificationSettings();
+  }
+  let keys: string[] = [];
+  try {
+    keys = await findQuietAppNotificationKeys();
+    for (const key of keys) {
+      if (enabled) {
+        if (!quietNotificationBackup.has(key)) quietNotificationBackup.set(key, await readEnabledValue(key));
+        await runReg(['add', key, '/v', 'Enabled', '/t', 'REG_DWORD', '/d', '0', '/f']);
+      } else if (quietNotificationBackup.has(key)) {
+        const previous = quietNotificationBackup.get(key);
+        if (previous) await runReg(['add', key, '/v', 'Enabled', '/t', 'REG_DWORD', '/d', String(Number.parseInt(previous, 16)), '/f']);
+        else await runReg(['delete', key, '/v', 'Enabled', '/f']);
+      }
+    }
+    if (!enabled) quietNotificationBackup.clear();
+    saveQuietNotificationSettings();
+  } catch {
+    return { enabled: false, managedApps: [], message: 'Windows 通知设置暂时无法修改；可改用 Windows 专注助手。' };
+  }
+  const managedApps = keys.map((key) => /wechat|weixin/i.test(key) ? '微信' : 'QQ');
+  if (!managedApps.length) return { enabled, managedApps: [], message: '未发现已登记的 QQ 或微信通知。可从 Windows 专注助手手动管理。' };
+  return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已暂时关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知。` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置。` };
+};
 const companionDimensions = () => ({
   width: Math.round(COMPANION_BASE_WIDTH * companionSettings.scale),
   height: Math.round(COMPANION_BASE_HEIGHT * companionSettings.scale)
@@ -196,6 +275,7 @@ app.whenReady().then(() => {
 
   Menu.setApplicationMenu(null);
   loadCompanionSettings();
+  loadQuietNotificationSettings();
   createWindow();
   createCompanionWindow();
   createTray();
@@ -219,8 +299,10 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('desktop:hide-to-tray', () => mainWindow?.hide());
-  ipcMain.handle('desktop:set-immersive', (_event, enabled: boolean) => {
-    mainWindow?.webContents.send('desktop:main-immersive', Boolean(enabled));
+  ipcMain.handle('desktop:set-immersive', async (_event, enabled: boolean) => {
+    const quietResult = await setQuietAppNotifications(Boolean(enabled));
+    mainWindow?.webContents.send('desktop:main-immersive', Boolean(enabled) && quietResult.enabled);
+    return quietResult;
   });
   ipcMain.handle('desktop:get-companion-settings', () => companionSettings);
   ipcMain.handle('desktop:update-companion-settings', (_event, changes: Partial<CompanionSettings>) => {

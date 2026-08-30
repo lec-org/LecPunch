@@ -50,8 +50,10 @@ export const CompanionApp = () => {
     const next = !immersive;
     setImmersive(next);
     localStorage.setItem('lecpunch.election.immersive-enabled', String(next));
-    void window.lecpunchDesktop?.setImmersive(next);
-    void window.lecpunchDesktop?.notify({ title: 'LecPunch', body: next ? '免提示模式已开启，本应用提醒将静音。' : '免提示模式已退出。' });
+    void window.lecpunchDesktop?.setImmersive(next).then((result) => {
+      if (!result?.enabled && next) setImmersive(false);
+      return window.lecpunchDesktop?.notify({ title: 'LecPunch', body: result?.message ?? (next ? '免提示模式已开启。' : '免提示模式已退出。') });
+    });
   };
 
   const updateCatScale = async (scale: number) => {

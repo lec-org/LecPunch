@@ -7,7 +7,7 @@ interface Window {
     isPackaged: boolean;
     notify: (payload: { title: string; body: string }) => Promise<void>;
     hideToTray: () => Promise<void>;
-    setImmersive: (enabled: boolean) => Promise<void>;
+    setImmersive: (enabled: boolean) => Promise<{ enabled: boolean; managedApps: string[]; message: string }>;
     onMainImmersive: (callback: (enabled: boolean) => void) => () => void;
     onBongoKey: (callback: (event: { kind: 'keydown' | 'keyup'; key: string }) => void) => () => void;
     getCompanionSettings: () => Promise<{ scale: number; visible: boolean }>;

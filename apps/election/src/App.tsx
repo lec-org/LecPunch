@@ -65,6 +65,11 @@ export const App = () => {
   const [quickTask, setQuickTask] = useState<QuickTask | null>(readQuickTask);
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
+  useEffect(() => {
+    document.body.classList.toggle('desktop-main-body', Boolean(window.lecpunchDesktop?.isDesktop));
+    return () => document.body.classList.remove('desktop-main-body');
+  }, []);
+
   const showDesktopReminder = async (title: string, body: string) => {
     if (!immersive) await window.lecpunchDesktop?.notify({ title, body });
   };
@@ -97,7 +102,7 @@ export const App = () => {
 
   useEffect(() => { if (readToken()) void refresh(); }, []);
   useEffect(() => { localStorage.setItem(REMINDER_STORAGE_KEY, String(remindersEnabled)); }, [remindersEnabled]);
-  useEffect(() => { localStorage.setItem(IMMERSIVE_STORAGE_KEY, String(immersive)); void window.lecpunchDesktop?.setImmersive(immersive); }, [immersive]);
+  useEffect(() => { localStorage.setItem(IMMERSIVE_STORAGE_KEY, String(immersive)); }, [immersive]);
   useEffect(() => window.lecpunchDesktop?.onMainImmersive((enabled) => setImmersive(enabled)), []);
   useEffect(() => {
     if (quickTask) localStorage.setItem(QUICK_TASK_STORAGE_KEY, JSON.stringify(quickTask));
@@ -160,8 +165,15 @@ export const App = () => {
 
   const toggleImmersive = () => {
     const next = !immersive;
-    setImmersive(next);
-    setNotice(next ? '已开启免提示模式：LecPunch 提醒已静音。可通过 Windows 专注助手统一管理 QQ、微信。' : '已退出免提示模式。');
+    if (!window.lecpunchDesktop) {
+      setImmersive(next);
+      setNotice('浏览器模式只会静音 LecPunch 自身提醒。');
+      return;
+    }
+    void window.lecpunchDesktop.setImmersive(next).then((result) => {
+      setImmersive(next && result.enabled);
+      setNotice(result.message);
+    });
   };
 
   const hideToTray = async () => {
@@ -183,7 +195,7 @@ const LoginScreen = ({ loading, notice, onLogin }: { loading: boolean; notice: s
 
 const Sidebar = ({ active, open, onClose, onSelect, user, onLogout, immersive, onToggleImmersive }: { active: View; open: boolean; onClose: () => void; onSelect: (view: View) => void; user: ElectionUser; onLogout: () => void; immersive: boolean; onToggleImmersive: () => void }) => {
   const items: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [{ id: 'dashboard', label: '工作台', icon: LayoutDashboard }, { id: 'ranking', label: '打卡排行', icon: Trophy }, { id: 'team', label: '团队成员', icon: UsersRound }, { id: 'reports', label: '成长报告', icon: BookOpenText }];
-  return <aside className={`sidebar ${open ? 'sidebar-open' : ''}`}><div className="sidebar-header"><div className="brand-mark"><Sparkles size={20} /></div><div><strong>lec<span>e</span>ction</strong><small>DESKTOP CLIENT</small></div><button className="icon-button sidebar-close" onClick={onClose}><X size={18} /></button></div><nav>{items.map(({ id, label, icon: Icon }) => <button key={id} className={active === id ? 'nav-active' : ''} onClick={() => onSelect(id)}><Icon size={19} /><span>{label}</span>{active === id ? <i /> : null}</button>)}</nav><div className="sidebar-bottom"><button className={`immersive-toggle ${immersive ? 'enabled' : ''}`} onClick={onToggleImmersive}><Moon size={17} /><span><strong>免提示模式</strong><small>{immersive ? '已开启，提醒静音' : '专注时关闭本应用提醒'}</small></span><i /></button><p className="system-note"><VolumeX size={13} />QQ、微信通知请由 Windows 专注助手管理</p><button className="logout" onClick={onLogout}><LogOut size={17} />退出 {user.displayName}</button></div></aside>;
+  return <aside className={`sidebar ${open ? 'sidebar-open' : ''}`}><div className="sidebar-header"><div className="brand-mark"><Sparkles size={20} /></div><div><strong>lec<span>e</span>ction</strong><small>DESKTOP CLIENT</small></div><button className="icon-button sidebar-close" onClick={onClose}><X size={18} /></button></div><nav>{items.map(({ id, label, icon: Icon }) => <button key={id} className={active === id ? 'nav-active' : ''} onClick={() => onSelect(id)}><Icon size={19} /><span>{label}</span>{active === id ? <i /> : null}</button>)}</nav><div className="sidebar-bottom"><button className={`immersive-toggle ${immersive ? 'enabled' : ''}`} onClick={onToggleImmersive}><Moon size={17} /><span><strong>免提示模式</strong><small>{immersive ? 'QQ、微信提醒已静音' : '专注时关闭 QQ、微信提醒'}</small></span><i /></button><p className="system-note"><VolumeX size={13} />首次开启会请求通知管理授权</p><button className="logout" onClick={onLogout}><LogOut size={17} />退出 {user.displayName}</button></div></aside>;
 };
 
 const Dashboard = ({ user, attendance, points, teamStats, remindersEnabled, onToggleReminders, onAttendance, onRanking }: { user: ElectionUser; attendance: AttendanceSnapshot | null; points: number; teamStats: TeamWeeklyStat[]; remindersEnabled: boolean; onToggleReminders: () => void; onAttendance: () => void; onRanking: () => void }) => {
