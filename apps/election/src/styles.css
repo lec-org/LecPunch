@@ -58,16 +58,17 @@ html.companion-document,html.companion-document body,html.companion-document #ro
 
 /* Desktop companion: the host is transparent and fixed-size. Scaling is only
    applied to .cat-visual, never to the surrounding menus or settings panel. */
-.cat-visual { position:absolute; inset:0; transform-origin:center bottom; }
+.cat-visual { position:absolute; inset:0; transform-origin:center bottom; will-change:transform; contain:layout paint; backface-visibility:hidden; }
 .desktop-companion { width:780px; height:520px; transform:none !important; }
 .desktop-companion .bongo-stage { left:60px; right:auto; bottom:80px; width:640px; height:370px; -webkit-app-region:no-drag; }
 .desktop-companion .cat-visual { inset:auto; left:80px; bottom:20px; width:480px; height:278px; transform:scale(var(--cat-scale, 1)); }
+.desktop-companion .bongo-stage { filter:none; }
+.desktop-companion .cat-visual { filter:drop-shadow(0 15px 15px rgba(38,134,188,.18)); }
+.desktop-companion .bongo-canvas { transform:translateZ(0); backface-visibility:hidden; will-change:transform; }
 .desktop-companion .cat-action-fan { left:260px; top:205px; }
 .desktop-companion .cat-orbit { right:112px; bottom:62px; }
 .desktop-companion .cat-settings-panel { left:-45px; bottom:-25px; }
-.cat-drag-zone { position:absolute; z-index:4; display:block; background:transparent; -webkit-app-region:drag; }
-.cat-drag-head { left:13%; top:0; width:62%; height:71%; border-radius:44% 46% 35% 34% / 42% 44% 36% 38%; clip-path:polygon(9% 28%,21% 6%,39% 15%,53% 2%,76% 15%,95% 30%,91% 78%,70% 100%,26% 100%,6% 74%); }
-.cat-drag-keyboard { left:1%; right:1%; bottom:0; height:44%; clip-path:polygon(0 17%,15% 0,92% 15%,100% 52%,93% 100%,18% 93%,8% 64%); }
+.cat-drag-zone { position:absolute; z-index:4; inset:0; display:block; background:transparent; -webkit-app-region:drag; }
 .desktop-companion .bongo-menu-hotspot,.desktop-companion .cat-action,.desktop-companion .cat-settings-panel,.desktop-companion .cat-settings-panel * { -webkit-app-region:no-drag !important; }
 
 .profile-button { padding:4px 7px 4px 6px; border:1px solid transparent; border-radius:13px; background:transparent; text-align:left; transition:.2s ease; }.profile-button:hover { border-color:rgba(76,174,222,.26); background:rgba(255,255,255,.55); }.cat-recall-button { color:#167bb9; border-color:rgba(38,159,219,.35); background:rgba(228,248,255,.8); }

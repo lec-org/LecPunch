@@ -218,6 +218,19 @@ export const BongoCatCompanion = ({
   }, [desktop]);
 
   useEffect(() => {
+    if (!desktop) return;
+    return window.lecpunchDesktop?.onBongoMenuToggle(() => {
+      if (!settingsOpen) setMenuOpen((open) => !open);
+    });
+  }, [desktop, settingsOpen]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    window.lecpunchDesktop?.setCompanionOverlayActive(menuOpen || settingsOpen);
+    return () => window.lecpunchDesktop?.setCompanionOverlayActive(false);
+  }, [desktop, menuOpen, settingsOpen]);
+
+  useEffect(() => {
     const keepInsideScreen = () => setPosition((current) => clampPosition(current));
     window.addEventListener('resize', keepInsideScreen);
     return () => window.removeEventListener('resize', keepInsideScreen);
@@ -276,7 +289,7 @@ export const BongoCatCompanion = ({
         {leftKey ? <img className="bongo-key-layer" src={`${assetBase}resources/left-keys/${leftKey}.png`} alt="" draggable={false} /> : null}
         {rightKey ? <img className="bongo-key-layer" src={`${assetBase}resources/right-keys/${rightKey}.png`} alt="" draggable={false} /> : null}
         {!ready ? <div className={`bongo-loading ${loadFailed ? 'load-failed' : ''}`}>{loadFailed ? '小猫动画暂时不可用' : '小猫正在准备…'}</div> : null}
-        {desktop ? <><i className="cat-drag-zone cat-drag-head" /><i className="cat-drag-zone cat-drag-keyboard" /><button className="bongo-menu-hotspot" onClick={() => setMenuOpen((open) => !open)} aria-label="打开小猫功能菜单" /></> : null}
+        {desktop ? <i className="cat-drag-zone" aria-hidden="true" /> : null}
       </div>
       <div className="cat-action-fan">{actions.map((action, index) => <button className={`cat-action cat-action-${index + 1}`} key={action.label} onClick={() => { action.onClick(); setMenuOpen(false); }} title={action.label}><span>{action.icon}</span><em>{action.label}</em></button>)}</div>
       {desktop && settingsOpen ? <section className="cat-settings-panel" aria-label="小猫设置">

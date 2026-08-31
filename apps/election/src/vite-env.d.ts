@@ -10,6 +10,8 @@ interface Window {
     setImmersive: (enabled: boolean) => Promise<{ enabled: boolean; managedApps: string[]; message: string }>;
     onMainImmersive: (callback: (enabled: boolean) => void) => () => void;
     onBongoKey: (callback: (event: { kind: 'keydown' | 'keyup'; key: string }) => void) => () => void;
+    onBongoMenuToggle: (callback: () => void) => () => void;
+    setCompanionOverlayActive: (active: boolean) => void;
     getCompanionSettings: () => Promise<{ scale: number; visible: boolean }>;
     updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => Promise<{ scale: number; visible: boolean }>;
     showCompanion: () => Promise<{ scale: number; visible: boolean }>;

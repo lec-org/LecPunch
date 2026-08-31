@@ -13,6 +13,8 @@ let mainWindow: BrowserWindow | null = null;
 let companionWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let companionOverlayActive = false;
+let companionPointerDown: { x: number; y: number } | null = null;
 // The transparent host stays fixed. Only the model inside it scales, leaving
 // the menu bubbles in the same desktop coordinates at every size.
 const COMPANION_WINDOW_WIDTH = 780;
@@ -116,6 +118,27 @@ const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotifica
   return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已暂时关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知。` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置。` };
 };
 const companionDimensions = () => ({ width: COMPANION_WINDOW_WIDTH, height: COMPANION_WINDOW_HEIGHT });
+const companionModelBounds = () => {
+  if (!companionWindow || !companionWindow.isVisible()) return null;
+  const [windowX, windowY] = companionWindow.getPosition();
+  const scale = companionSettings.scale;
+  // Keep these values in sync with the fixed desktop CSS layout. The scale
+  // origin is the model's bottom center, matching .cat-visual.
+  const baseX = windowX + 140;
+  const baseY = windowY + 142;
+  return {
+    x: baseX + (1 - scale) * 240,
+    y: baseY + (1 - scale) * 278,
+    width: 480 * scale,
+    height: 278 * scale
+  };
+};
+const isCursorOnCompanionModel = () => {
+  const bounds = companionModelBounds();
+  if (!bounds) return false;
+  const point = screen.getCursorScreenPoint();
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
+};
 
 const keyboardKeyMap = new Map<number, string>([
   [UiohookKey.A, 'KeyA'], [UiohookKey.B, 'KeyB'], [UiohookKey.C, 'KeyC'], [UiohookKey.D, 'KeyD'], [UiohookKey.E, 'KeyE'], [UiohookKey.F, 'KeyF'], [UiohookKey.G, 'KeyG'], [UiohookKey.H, 'KeyH'], [UiohookKey.I, 'KeyI'], [UiohookKey.J, 'KeyJ'], [UiohookKey.K, 'KeyK'], [UiohookKey.L, 'KeyL'], [UiohookKey.M, 'KeyM'], [UiohookKey.N, 'KeyN'], [UiohookKey.O, 'KeyO'], [UiohookKey.P, 'KeyP'], [UiohookKey.Q, 'KeyQ'], [UiohookKey.R, 'KeyR'], [UiohookKey.S, 'KeyS'], [UiohookKey.T, 'KeyT'], [UiohookKey.U, 'KeyU'], [UiohookKey.V, 'KeyV'], [UiohookKey.W, 'KeyW'], [UiohookKey.X, 'KeyX'], [UiohookKey.Y, 'KeyY'], [UiohookKey.Z, 'KeyZ'],
@@ -142,6 +165,8 @@ const showCompanion = () => {
 
 const hideCompanion = () => {
   companionSettings.visible = false;
+  companionOverlayActive = false;
+  companionPointerDown = null;
   saveCompanionSettings();
   companionWindow?.hide();
 };
@@ -287,6 +312,20 @@ app.whenReady().then(() => {
     const key = keyboardKeyMap.get(event.keycode);
     if (key) companionWindow?.webContents.send('bongo:key', { kind: 'keyup', key });
   });
+  // Native drag regions do not emit DOM click events. Track a global press and
+  // release so the complete scaled model can both drag and open its menu.
+  uIOhook.on('mousedown', (event) => {
+    if (Number(event.button) !== 1 || companionOverlayActive || !isCursorOnCompanionModel()) return;
+    companionPointerDown = screen.getCursorScreenPoint();
+  });
+  uIOhook.on('mouseup', (event) => {
+    if (Number(event.button) !== 1 || !companionPointerDown) return;
+    const start = companionPointerDown;
+    companionPointerDown = null;
+    const end = screen.getCursorScreenPoint();
+    if (companionOverlayActive || Math.hypot(end.x - start.x, end.y - start.y) > 6 || !isCursorOnCompanionModel()) return;
+    companionWindow?.webContents.send('bongo:toggle-menu');
+  });
   uIOhook.start();
 
   ipcMain.handle('desktop:notify', (_event, payload: { title?: string; body?: string }) => {
@@ -329,6 +368,9 @@ app.whenReady().then(() => {
   ipcMain.handle('desktop:show-companion', () => {
     showCompanion();
     return companionSettings;
+  });
+  ipcMain.on('desktop:set-companion-overlay-active', (_event, active: boolean) => {
+    companionOverlayActive = Boolean(active);
   });
   ipcMain.handle('desktop:show-main', (_event, action: 'schedule' | 'shop') => {
     showWindow();

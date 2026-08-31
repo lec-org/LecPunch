@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld('lecpunchDesktop', {
     ipcRenderer.on('bongo:key', listener);
     return () => ipcRenderer.removeListener('bongo:key', listener);
   },
+  onBongoMenuToggle: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('bongo:toggle-menu', listener);
+    return () => ipcRenderer.removeListener('bongo:toggle-menu', listener);
+  },
+  setCompanionOverlayActive: (active: boolean) => ipcRenderer.send('desktop:set-companion-overlay-active', active),
   getCompanionSettings: () => ipcRenderer.invoke('desktop:get-companion-settings'),
   updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => ipcRenderer.invoke('desktop:update-companion-settings', settings),
   showCompanion: () => ipcRenderer.invoke('desktop:show-companion'),
