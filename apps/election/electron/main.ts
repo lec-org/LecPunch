@@ -66,10 +66,17 @@ const runReg = (args: string[]) => new Promise<{ stdout: string }>((resolve, rej
   });
 });
 const notificationSettingsRoot = 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings';
-const quietAppKeyPattern = /(wechat|weixin|(?:tencent.*)?qq)/i;
+const quietAppKind = (key: string): '微信' | 'QQ' | null => {
+  const appId = key.split('\\').pop()?.toLowerCase() ?? '';
+  // Keep this deliberately strict: QQLive and other Tencent products must not
+  // be muted when the user only asks to silence QQ / WeChat messages.
+  if (/(^|[!._-])(wechat|weixin|wecom|tencentwechat|tencentwework)([!._-]|$)/i.test(appId)) return '微信';
+  if (/(^|!)(qq|tencentqq|qq\.exe|com\.tencent\.qq)(?=$|[._-])/i.test(appId)) return 'QQ';
+  return null;
+};
 const findQuietAppNotificationKeys = async () => {
   const { stdout } = await runReg(['query', notificationSettingsRoot, '/s']);
-  return [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.startsWith('HKEY_CURRENT_USER\\') && quietAppKeyPattern.test(line)))];
+  return [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.startsWith('HKEY_CURRENT_USER\\') && quietAppKind(line)))];
 };
 const readEnabledValue = async (key: string) => {
   try {
@@ -116,8 +123,8 @@ const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotifica
   } catch {
     return { enabled: false, managedApps: [], message: 'Windows 通知设置暂时无法修改；可改用 Windows 专注助手。' };
   }
-  const managedApps = keys.map((key) => /wechat|weixin/i.test(key) ? '微信' : 'QQ');
-  if (!managedApps.length) return { enabled, managedApps: [], message: '未发现已登记的 QQ 或微信通知。可从 Windows 专注助手手动管理。' };
+  const managedApps = keys.map((key) => quietAppKind(key)).filter((name): name is '微信' | 'QQ' => Boolean(name));
+  if (!managedApps.length) return { enabled, managedApps: [], message: '未发现已登记的 QQ 或微信 Windows 通知。请先让对应软件产生一次系统通知后，再重新开启免提示模式。' };
   return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已暂时关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知。` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置。` };
 };
 const companionDimensions = () => ({ width: COMPANION_WINDOW_WIDTH, height: COMPANION_WINDOW_HEIGHT });
