@@ -93,6 +93,7 @@ export const BongoCatCompanion = ({
   desktop?: boolean;
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const visualRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelRef = useRef<Live2DSprite | null>(null);
   const pointerRef = useRef<{ id: number; startX: number; startY: number; lastX: number; lastY: number; origin: Position; moved: boolean } | null>(null);
@@ -111,7 +112,7 @@ export const BongoCatCompanion = ({
 
     const resizeModel = () => {
       const model = modelRef.current;
-      const host = hostRef.current;
+      const host = visualRef.current;
       if (!model || !host) return;
       const scale = Math.min(host.clientWidth / model.width, host.clientHeight / model.height) * 0.9;
       model.scale.set(scale);
@@ -123,7 +124,7 @@ export const BongoCatCompanion = ({
     const loadModel = async () => {
       try {
         const canvas = canvasRef.current;
-        const host = hostRef.current;
+        const host = visualRef.current;
         if (!canvas || !host) return;
 
         app = new Application();
@@ -269,11 +270,14 @@ export const BongoCatCompanion = ({
   return <aside className={`bongo-companion ${desktop ? 'desktop-companion' : ''} ${menuOpen ? 'menu-open' : ''}`} style={desktop ? undefined : { left: position.x, top: position.y }} aria-label="LecPunch 小猫助手">
     <div className="cat-orbit" aria-hidden="true" />
     <div className="bongo-stage" ref={hostRef} onPointerDown={onPointerDown} onPointerMove={desktop ? undefined : onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} role="button" tabIndex={0} aria-label="拖动小猫移动，单击打开快捷功能">
-      <img className="bongo-background" src={`${assetBase}resources/keyboard-transparent.png`} alt="" draggable={false} />
-      <canvas className="bongo-canvas" ref={canvasRef} />
-      {leftKey ? <img className="bongo-key-layer" src={`${assetBase}resources/left-keys/${leftKey}.png`} alt="" draggable={false} /> : null}
-      {rightKey ? <img className="bongo-key-layer" src={`${assetBase}resources/right-keys/${rightKey}.png`} alt="" draggable={false} /> : null}
-      {!ready ? <div className={`bongo-loading ${loadFailed ? 'load-failed' : ''}`}>{loadFailed ? '小猫动画暂时不可用' : '小猫正在准备…'}</div> : null}
+      <div className="cat-visual" ref={visualRef}>
+        <img className="bongo-background" src={`${assetBase}resources/keyboard-transparent.png`} alt="" draggable={false} />
+        <canvas className="bongo-canvas" ref={canvasRef} />
+        {leftKey ? <img className="bongo-key-layer" src={`${assetBase}resources/left-keys/${leftKey}.png`} alt="" draggable={false} /> : null}
+        {rightKey ? <img className="bongo-key-layer" src={`${assetBase}resources/right-keys/${rightKey}.png`} alt="" draggable={false} /> : null}
+        {!ready ? <div className={`bongo-loading ${loadFailed ? 'load-failed' : ''}`}>{loadFailed ? '小猫动画暂时不可用' : '小猫正在准备…'}</div> : null}
+        {desktop ? <><i className="cat-drag-zone cat-drag-head" /><i className="cat-drag-zone cat-drag-keyboard" /><button className="bongo-menu-hotspot" onClick={() => setMenuOpen((open) => !open)} aria-label="打开小猫功能菜单" /></> : null}
+      </div>
       <div className="cat-action-fan">{actions.map((action, index) => <button className={`cat-action cat-action-${index + 1}`} key={action.label} onClick={() => { action.onClick(); setMenuOpen(false); }} title={action.label}><span>{action.icon}</span><em>{action.label}</em></button>)}</div>
       {desktop && settingsOpen ? <section className="cat-settings-panel" aria-label="小猫设置">
         <div><strong>小猫设置</strong><button onClick={onToggleSettings} aria-label="关闭小猫设置">×</button></div>
@@ -283,7 +287,6 @@ export const BongoCatCompanion = ({
         <button className="cat-settings-row" onClick={() => onSetVisible?.(false)}><MonitorOff size={15} /><span>隐藏桌面小猫</span></button>
         <button className="cat-settings-row" onClick={onOpenFocusAssist}><ExternalLink size={15} /><span>打开 Windows 专注助手</span></button>
       </section> : null}
-      {desktop ? <button className="bongo-menu-hotspot" onClick={() => setMenuOpen((open) => !open)} aria-label="打开小猫功能菜单" /> : null}
       <div className="bongo-hint">{menuOpen ? '点选快捷功能' : '拖动移动 · 单击菜单'}</div>
     </div>
   </aside>;

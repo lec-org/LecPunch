@@ -13,8 +13,10 @@ let mainWindow: BrowserWindow | null = null;
 let companionWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-const COMPANION_BASE_WIDTH = 560;
-const COMPANION_BASE_HEIGHT = 390;
+// The transparent host stays fixed. Only the model inside it scales, leaving
+// the menu bubbles in the same desktop coordinates at every size.
+const COMPANION_WINDOW_WIDTH = 780;
+const COMPANION_WINDOW_HEIGHT = 520;
 type CompanionSettings = { scale: number; visible: boolean };
 type QuietNotificationResult = { enabled: boolean; managedApps: string[]; message: string };
 let companionSettings: CompanionSettings = { scale: 1, visible: true };
@@ -113,10 +115,7 @@ const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotifica
   if (!managedApps.length) return { enabled, managedApps: [], message: '未发现已登记的 QQ 或微信通知。可从 Windows 专注助手手动管理。' };
   return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已暂时关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知。` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置。` };
 };
-const companionDimensions = () => ({
-  width: Math.round(COMPANION_BASE_WIDTH * companionSettings.scale),
-  height: Math.round(COMPANION_BASE_HEIGHT * companionSettings.scale)
-});
+const companionDimensions = () => ({ width: COMPANION_WINDOW_WIDTH, height: COMPANION_WINDOW_HEIGHT });
 
 const keyboardKeyMap = new Map<number, string>([
   [UiohookKey.A, 'KeyA'], [UiohookKey.B, 'KeyB'], [UiohookKey.C, 'KeyC'], [UiohookKey.D, 'KeyD'], [UiohookKey.E, 'KeyE'], [UiohookKey.F, 'KeyF'], [UiohookKey.G, 'KeyG'], [UiohookKey.H, 'KeyH'], [UiohookKey.I, 'KeyI'], [UiohookKey.J, 'KeyJ'], [UiohookKey.K, 'KeyK'], [UiohookKey.L, 'KeyL'], [UiohookKey.M, 'KeyM'], [UiohookKey.N, 'KeyN'], [UiohookKey.O, 'KeyO'], [UiohookKey.P, 'KeyP'], [UiohookKey.Q, 'KeyQ'], [UiohookKey.R, 'KeyR'], [UiohookKey.S, 'KeyS'], [UiohookKey.T, 'KeyT'], [UiohookKey.U, 'KeyU'], [UiohookKey.V, 'KeyV'], [UiohookKey.W, 'KeyW'], [UiohookKey.X, 'KeyX'], [UiohookKey.Y, 'KeyY'], [UiohookKey.Z, 'KeyZ'],
@@ -313,6 +312,10 @@ app.whenReady().then(() => {
     const [x, y] = window.getPosition();
     const [oldWidth, oldHeight] = window.getSize();
     const { width, height } = companionDimensions();
+    const shouldResizeWindow = changes.visible !== undefined || oldWidth !== width || oldHeight !== height;
+    // Slider changes deliberately do not resize the native window after the
+    // one-time host migration from older, smaller companion windows.
+    if (!shouldResizeWindow) return companionSettings;
     const display = screen.getDisplayNearestPoint({ x, y });
     const area = display.workArea;
     const nextX = Math.max(area.x, Math.min(x + Math.round((oldWidth - width) / 2), area.x + area.width - width));
@@ -323,6 +326,10 @@ app.whenReady().then(() => {
     return companionSettings;
   });
   ipcMain.handle('desktop:open-focus-assist', () => shell.openExternal('ms-settings:quiethours'));
+  ipcMain.handle('desktop:show-companion', () => {
+    showCompanion();
+    return companionSettings;
+  });
   ipcMain.handle('desktop:show-main', (_event, action: 'schedule' | 'shop') => {
     showWindow();
     mainWindow?.webContents.send('desktop:main-action', action);

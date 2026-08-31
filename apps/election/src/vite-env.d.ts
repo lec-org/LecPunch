@@ -12,6 +12,7 @@ interface Window {
     onBongoKey: (callback: (event: { kind: 'keydown' | 'keyup'; key: string }) => void) => () => void;
     getCompanionSettings: () => Promise<{ scale: number; visible: boolean }>;
     updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => Promise<{ scale: number; visible: boolean }>;
+    showCompanion: () => Promise<{ scale: number; visible: boolean }>;
     openFocusAssist: () => Promise<void>;
     showMain: (action: 'schedule' | 'shop') => Promise<void>;
     notifyMainStateChanged: () => Promise<void>;

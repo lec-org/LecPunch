@@ -4,6 +4,13 @@ export interface ElectionUser {
   username: string;
   role: 'member' | 'admin';
   teamId: string;
+  status?: 'active' | 'disabled';
+  enrollYear?: number;
+  studentId?: string;
+  realName?: string;
+  avatarBase64?: string;
+  avatarColor?: string;
+  avatarEmoji?: string;
 }
 
 export interface AttendanceSnapshot {

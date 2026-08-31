@@ -1,10 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Bell, BellRing, BookOpenText, CalendarDays, Check, ChevronRight, CircleDollarSign, Crown, EyeOff, Flame, LayoutDashboard, LogOut, Menu, Minimize2, Moon, RefreshCw, Sparkles, Trophy, UsersRound, VolumeX, X } from 'lucide-react';
-import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, fetchTeamWeeklyStats, getApiBaseUrl, login, readToken } from '@/lib/api';
+import { ArrowUpRight, Bell, BellRing, BookOpenText, CalendarDays, Cat, Check, ChevronRight, CircleDollarSign, Crown, EyeOff, Flame, LayoutDashboard, LockKeyhole, LogOut, Menu, Minimize2, Moon, RefreshCw, Save, ShieldCheck, Sparkles, Trophy, UserRound, UsersRound, VolumeX, X } from 'lucide-react';
+import { checkIn, checkOut, clearToken, fetchAttendance, fetchCurrentUser, fetchPoints, fetchTeamWeeklyStats, getApiBaseUrl, login, readToken, updatePassword, updateProfile } from '@/lib/api';
 import { loadWeeklyReports } from '@/lib/reports';
 import type { AttendanceSnapshot, ElectionUser, TeamWeeklyStat, WeeklyReportFeed } from '@/types';
 
-type View = 'dashboard' | 'ranking' | 'team' | 'reports';
+type View = 'dashboard' | 'ranking' | 'team' | 'reports' | 'profile';
 type QuickTask = { title: string; time: string };
 
 const REMINDER_STORAGE_KEY = 'lecpunch.election.reminders-enabled';
@@ -181,11 +181,65 @@ export const App = () => {
     await window.lecpunchDesktop.hideToTray();
   };
 
+  const showCat = async () => {
+    if (!window.lecpunchDesktop) return setNotice('当前为浏览器模式，桌面小猫仅在 Windows 客户端中可用。');
+    await window.lecpunchDesktop.showCompanion();
+    setNotice('桌面小猫已出现，可拖动它到合适的位置。');
+  };
+
   if (!user) return <LoginScreen loading={loading} notice={notice} onLogin={async (username, password) => { setLoading(true); try { setUser(await login(username, password)); await refresh(); } catch (error) { setNotice(error instanceof Error ? error.message : '登录失败'); setLoading(false); } }} />;
 
-  const labels: Record<View, string> = { dashboard: '工作台', ranking: '打卡排行', team: '团队成员', reports: '成长报告' };
-  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><div className="profile-chip"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></div></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}</div></section>{scheduleOpen ? <QuickSchedule initialTask={quickTask} onClose={() => setScheduleOpen(false)} onSave={(task) => { setQuickTask(task); setRemindersEnabled(true); setScheduleOpen(false); setNotice(`已设置「${task.title}」：每天 ${task.time} 提醒。`); }} /> : null}</main>;
+  const labels: Record<View, string> = { dashboard: '工作台', ranking: '打卡排行', team: '团队成员', reports: '成长报告', profile: '个人设置' };
+  return <main className={`app-shell ${immersive ? 'is-immersive' : ''}`}><div className="blue-orb blue-orb-one" /><div className="blue-orb blue-orb-two" /><section className="desktop-frame"><Sidebar active={view} open={mobileOpen} onClose={() => setMobileOpen(false)} onSelect={(next) => { setView(next); setMobileOpen(false); }} user={user} onLogout={() => { clearToken(); setUser(null); }} immersive={immersive} onToggleImmersive={toggleImmersive} /><div className="workspace"><header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="打开菜单"><Menu size={19} /></button><div className="crumb"><span>LEC / ELECTION</span><ChevronRight size={14} /><strong>{labels[view]}</strong></div><div className="topbar-actions"><button className="icon-button cat-recall-button" aria-label="唤起桌面小猫" title="唤起桌面小猫" onClick={() => void showCat()}><Cat size={18} /></button><button className="icon-button" aria-label="测试系统提醒" onClick={() => { void showDesktopReminder('LecPunch 提醒测试', 'Windows 原生提醒已准备就绪。'); setNotice(immersive ? '沉浸模式中不会弹出提醒。' : '已发送 Windows 原生提醒测试。'); }}><Bell size={18} /></button><button className="icon-button" aria-label="最小化到系统托盘" onClick={() => void hideToTray()}><Minimize2 size={18} /></button><button className="icon-button" aria-label="刷新数据" onClick={() => void refresh()}><RefreshCw size={18} /></button><button className="profile-chip profile-button" onClick={() => setView('profile')} title="个人设置"><span>{user.displayName.slice(0, 1)}</span><div><strong>{user.displayName}</strong><small>{user.role === 'admin' ? '管理员' : '成员'}</small></div></button></div></header>{notice ? <div className="toast"><Check size={16} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div> : null}{loading ? <div className="loading-line" /> : null}{view === 'dashboard' ? <Dashboard user={user} attendance={attendance} points={points} teamStats={teamStats} remindersEnabled={remindersEnabled} onToggleReminders={() => setRemindersEnabled((current) => !current)} onAttendance={() => void handleAttendance()} onRanking={() => setView('ranking')} /> : null}{view === 'ranking' ? <RankingPage teamStats={teamStats} /> : null}{view === 'team' ? <TeamPage teamStats={teamStats} /> : null}{view === 'reports' ? <ReportsPage reports={reports} connected={reportSourceConnected} /> : null}{view === 'profile' ? <ProfilePage user={user} onUserChanged={setUser} onNotice={setNotice} /> : null}</div></section>{scheduleOpen ? <QuickSchedule initialTask={quickTask} onClose={() => setScheduleOpen(false)} onSave={(task) => { setQuickTask(task); setRemindersEnabled(true); setScheduleOpen(false); setNotice(`已设置「${task.title}」：每天 ${task.time} 提醒。`); }} /> : null}</main>;
 };
+
+const ProfilePage = ({ user, onUserChanged, onNotice }: { user: ElectionUser; onUserChanged: (user: ElectionUser) => void; onNotice: (notice: string) => void }) => {
+  const [displayName, setDisplayName] = useState(user.displayName);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+
+  useEffect(() => setDisplayName(user.displayName), [user.displayName]);
+
+  const saveProfile = async (event: FormEvent) => {
+    event.preventDefault();
+    const nextName = displayName.trim();
+    if (nextName.length < 2) return onNotice('昵称至少需要 2 个字符。');
+    setSavingProfile(true);
+    try {
+      onUserChanged(await updateProfile(nextName));
+      onNotice('个人信息已保存。');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '个人信息保存失败。');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const savePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    if (newPassword.length < 6) return onNotice('新密码至少需要 6 位。');
+    if (newPassword !== confirmPassword) return onNotice('两次输入的新密码不一致。');
+    setSavingPassword(true);
+    try {
+      await updatePassword(oldPassword, newPassword);
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      onNotice('密码已修改，请妥善保管。');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '密码修改失败，请确认当前密码。');
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
+  return <div className="page profile-page"><section className="welcome-row"><div><p className="eyebrow">ACCOUNT SETTINGS</p><h1>个人<span>设置</span></h1><p>更新你在团队中展示的昵称，并安全维护登录凭据。</p></div><div className="profile-hero-avatar">{user.displayName.slice(0, 1)}</div></section><section className="profile-grid"><form className="profile-card blue-card" onSubmit={saveProfile}><div className="profile-card-title"><UserRound size={19} /><div><h2>基本信息</h2><p>昵称可在团队成员与排行中展示。</p></div></div><label>显示昵称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={32} /></label><div className="profile-readonly-grid"><InfoRow label="真实姓名" value={user.realName || '未设置'} /><InfoRow label="登录账号" value={user.username} /><InfoRow label="学号" value={user.studentId || '未设置'} /><InfoRow label="入学年份" value={user.enrollYear ? String(user.enrollYear) : '未设置'} /><InfoRow label="团队角色" value={user.role === 'admin' ? '管理员' : '成员'} /></div><button className="profile-save" disabled={savingProfile}>{savingProfile ? '正在保存…' : '保存个人信息'}<Save size={16} /></button></form><form className="profile-card blue-card" onSubmit={savePassword}><div className="profile-card-title"><LockKeyhole size={19} /><div><h2>登录安全</h2><p>修改密码后，当前桌面端仍保持登录。</p></div></div><label>当前密码<input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} autoComplete="current-password" required /></label><label>新密码<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={6} required /></label><label>确认新密码<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={6} required /></label><div className="profile-security-note"><ShieldCheck size={16} /><span>密码仅通过加密连接提交，桌面端不会保存明文密码。</span></div><button className="profile-save" disabled={savingPassword}>{savingPassword ? '正在修改…' : '更新密码'}<LockKeyhole size={16} /></button></form></section></div>;
+};
+
+const InfoRow = ({ label, value }: { label: string; value: string }) => <div><small>{label}</small><strong>{value}</strong></div>;
 
 const LoginScreen = ({ loading, notice, onLogin }: { loading: boolean; notice: string | null; onLogin: (username: string, password: string) => Promise<void> }) => {
   const [username, setUsername] = useState('');

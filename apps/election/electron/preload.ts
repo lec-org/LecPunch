@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('lecpunchDesktop', {
   },
   getCompanionSettings: () => ipcRenderer.invoke('desktop:get-companion-settings'),
   updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => ipcRenderer.invoke('desktop:update-companion-settings', settings),
+  showCompanion: () => ipcRenderer.invoke('desktop:show-companion'),
   openFocusAssist: () => ipcRenderer.invoke('desktop:open-focus-assist'),
   showMain: (action: 'schedule' | 'shop') => ipcRenderer.invoke('desktop:show-main', action),
   notifyMainStateChanged: () => ipcRenderer.invoke('desktop:notify-main-state'),

@@ -42,6 +42,8 @@ export const login = async (username: string, password: string) => {
 };
 
 export const fetchCurrentUser = () => request<ElectionUser>('/auth/me');
+export const updateProfile = (displayName: string) => request<ElectionUser>('/users/me', { method: 'PATCH', body: JSON.stringify({ displayName }) });
+export const updatePassword = (oldPassword: string, newPassword: string) => request('/users/me/password', { method: 'PATCH', body: JSON.stringify({ oldPassword, newPassword }) });
 export const fetchAttendance = () => request<AttendanceSnapshot>('/attendance/current');
 export const fetchPoints = () => request<{ totalPoints: number }>('/points/me');
 export const fetchTeamWeeklyStats = () => request<TeamWeeklyStatsResponse>('/stats/team/current-week');
