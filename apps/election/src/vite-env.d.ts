@@ -11,10 +11,11 @@ interface Window {
     onMainImmersive: (callback: (enabled: boolean) => void) => () => void;
     onBongoKey: (callback: (event: { kind: 'keydown' | 'keyup'; key: string }) => void) => () => void;
     onBongoMenuToggle: (callback: () => void) => () => void;
-    setCompanionOverlayActive: (active: boolean) => void;
-    getCompanionSettings: () => Promise<{ scale: number; visible: boolean }>;
-    updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => Promise<{ scale: number; visible: boolean }>;
-    showCompanion: () => Promise<{ scale: number; visible: boolean }>;
+    onBongoMessage: (callback: (payload: { message: string }) => void) => () => void;
+    setCompanionOverlayState: (state: { menuOpen?: boolean; settingsOpen?: boolean }) => void;
+    getCompanionSettings: () => Promise<{ scale: number; visible: boolean; replyTemplate: string }>;
+    updateCompanionSettings: (settings: { scale?: number; visible?: boolean; replyTemplate?: string }) => Promise<{ scale: number; visible: boolean; replyTemplate: string }>;
+    showCompanion: () => Promise<{ scale: number; visible: boolean; replyTemplate: string }>;
     openFocusAssist: () => Promise<void>;
     showMain: (action: 'schedule' | 'shop') => Promise<void>;
     notifyMainStateChanged: () => Promise<void>;

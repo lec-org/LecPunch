@@ -22,9 +22,14 @@ contextBridge.exposeInMainWorld('lecpunchDesktop', {
     ipcRenderer.on('bongo:toggle-menu', listener);
     return () => ipcRenderer.removeListener('bongo:toggle-menu', listener);
   },
-  setCompanionOverlayActive: (active: boolean) => ipcRenderer.send('desktop:set-companion-overlay-active', active),
+  onBongoMessage: (callback: (payload: { message: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { message: string }) => callback(payload);
+    ipcRenderer.on('bongo:message', listener);
+    return () => ipcRenderer.removeListener('bongo:message', listener);
+  },
+  setCompanionOverlayState: (state: { menuOpen?: boolean; settingsOpen?: boolean }) => ipcRenderer.send('desktop:set-companion-overlay-state', state),
   getCompanionSettings: () => ipcRenderer.invoke('desktop:get-companion-settings'),
-  updateCompanionSettings: (settings: { scale?: number; visible?: boolean }) => ipcRenderer.invoke('desktop:update-companion-settings', settings),
+  updateCompanionSettings: (settings: { scale?: number; visible?: boolean; replyTemplate?: string }) => ipcRenderer.invoke('desktop:update-companion-settings', settings),
   showCompanion: () => ipcRenderer.invoke('desktop:show-companion'),
   openFocusAssist: () => ipcRenderer.invoke('desktop:open-focus-assist'),
   showMain: (action: 'schedule' | 'shop') => ipcRenderer.invoke('desktop:show-main', action),

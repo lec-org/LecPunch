@@ -1,7 +1,7 @@
 import { Application, Ticker } from 'pixi.js';
 import { CubismSetting, Live2DSprite } from 'easy-live2d';
 import { BellRing, Coffee, ExternalLink, MonitorOff, Moon, Settings2, ShoppingBag } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useRef, useState } from 'react';
 
 type Hand = 'left' | 'right';
 type Position = { x: number; y: number };
@@ -76,6 +76,9 @@ export const BongoCatCompanion = ({
   onSetCatScale,
   onSetVisible,
   onOpenFocusAssist,
+  replyTemplate = '{username} {message}',
+  onSetReplyTemplate,
+  catMessage,
   desktop = false
 }: {
   attendanceActive: boolean;
@@ -90,6 +93,9 @@ export const BongoCatCompanion = ({
   onSetCatScale?: (scale: number) => void;
   onSetVisible?: (visible: boolean) => void;
   onOpenFocusAssist?: () => void;
+  replyTemplate?: string;
+  onSetReplyTemplate?: (template: string) => void;
+  catMessage?: { id: number; message: string } | null;
   desktop?: boolean;
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -226,8 +232,8 @@ export const BongoCatCompanion = ({
 
   useEffect(() => {
     if (!desktop) return;
-    window.lecpunchDesktop?.setCompanionOverlayActive(menuOpen || settingsOpen);
-    return () => window.lecpunchDesktop?.setCompanionOverlayActive(false);
+    window.lecpunchDesktop?.setCompanionOverlayState({ menuOpen, settingsOpen });
+    return () => window.lecpunchDesktop?.setCompanionOverlayState({ menuOpen: false, settingsOpen: false });
   }, [desktop, menuOpen, settingsOpen]);
 
   useEffect(() => {
@@ -280,7 +286,14 @@ export const BongoCatCompanion = ({
     ...(desktop && onToggleSettings ? [{ label: '小猫设置', icon: <Settings2 size={18} />, onClick: onToggleSettings }] : [])
   ];
 
-  return <aside className={`bongo-companion ${desktop ? 'desktop-companion' : ''} ${menuOpen ? 'menu-open' : ''}`} style={desktop ? undefined : { left: position.x, top: position.y }} aria-label="LecPunch 小猫助手">
+  const companionStyle = desktop
+    ? {
+        '--menu-anchor-x': `${320 - catScale * 60}px`,
+        '--menu-anchor-y': `${350 - catScale * 145}px`
+      } as CSSProperties
+    : { left: position.x, top: position.y };
+
+  return <aside className={`bongo-companion ${desktop ? 'desktop-companion' : ''} ${menuOpen ? 'menu-open' : ''}`} style={companionStyle} aria-label="LecPunch 小猫助手">
     <div className="cat-orbit" aria-hidden="true" />
     <div className="bongo-stage" ref={hostRef} onPointerDown={onPointerDown} onPointerMove={desktop ? undefined : onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} role="button" tabIndex={0} aria-label="拖动小猫移动，单击打开快捷功能">
       <div className="cat-visual" ref={visualRef}>
@@ -290,6 +303,7 @@ export const BongoCatCompanion = ({
         {rightKey ? <img className="bongo-key-layer" src={`${assetBase}resources/right-keys/${rightKey}.png`} alt="" draggable={false} /> : null}
         {!ready ? <div className={`bongo-loading ${loadFailed ? 'load-failed' : ''}`}>{loadFailed ? '小猫动画暂时不可用' : '小猫正在准备…'}</div> : null}
         {desktop ? <i className="cat-drag-zone" aria-hidden="true" /> : null}
+        {catMessage ? <div className="cat-head-message" key={catMessage.id}>{catMessage.message}</div> : null}
       </div>
       <div className="cat-action-fan">{actions.map((action, index) => <button className={`cat-action cat-action-${index + 1}`} key={action.label} onClick={() => { action.onClick(); setMenuOpen(false); }} title={action.label}><span>{action.icon}</span><em>{action.label}</em></button>)}</div>
       {desktop && settingsOpen ? <section className="cat-settings-panel" aria-label="小猫设置">
@@ -297,6 +311,10 @@ export const BongoCatCompanion = ({
         <p className="cat-size-label"><span>显示大小</span><strong>{Math.round(catScale * 100)}%</strong></p>
         <input className="cat-size-slider" type="range" min="70" max="130" step="1" value={Math.round(catScale * 100)} onChange={(event) => onSetCatScale?.(Number(event.target.value) / 100)} style={{ background: `linear-gradient(90deg, #24a8e5 ${((catScale - 0.7) / 0.6) * 100}%, #c7e6f4 ${((catScale - 0.7) / 0.6) * 100}%)` }} aria-label="调整小猫显示大小" />
         <div className="cat-size-marks" aria-hidden="true"><span>70%</span><span>100%</span><span>130%</span></div>
+        <label className="cat-template-label">提醒回复模板
+          <input className="cat-template-input" value={replyTemplate} maxLength={80} onChange={(event) => onSetReplyTemplate?.(event.target.value)} placeholder="{username} {message}" />
+          <small>可用变量：{'{username}'}、{'{message}'}</small>
+        </label>
         <button className="cat-settings-row" onClick={() => onSetVisible?.(false)}><MonitorOff size={15} /><span>隐藏桌面小猫</span></button>
         <button className="cat-settings-row" onClick={onOpenFocusAssist}><ExternalLink size={15} /><span>打开 Windows 专注助手</span></button>
       </section> : null}

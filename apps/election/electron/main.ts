@@ -13,15 +13,15 @@ let mainWindow: BrowserWindow | null = null;
 let companionWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-let companionOverlayActive = false;
+let companionOverlayState = { menuOpen: false, settingsOpen: false };
 let companionPointerDown: { x: number; y: number } | null = null;
 // The transparent host stays fixed. Only the model inside it scales, leaving
 // the menu bubbles in the same desktop coordinates at every size.
 const COMPANION_WINDOW_WIDTH = 780;
 const COMPANION_WINDOW_HEIGHT = 520;
-type CompanionSettings = { scale: number; visible: boolean };
+type CompanionSettings = { scale: number; visible: boolean; replyTemplate: string };
 type QuietNotificationResult = { enabled: boolean; managedApps: string[]; message: string };
-let companionSettings: CompanionSettings = { scale: 1, visible: true };
+let companionSettings: CompanionSettings = { scale: 1, visible: true, replyTemplate: '{username} {message}' };
 let quietNotificationConsentGranted = false;
 const quietNotificationBackup = new Map<string, string | null>();
 
@@ -32,7 +32,10 @@ const normalizeCompanionSettings = (settings: Partial<CompanionSettings>): Compa
   scale: Number.isFinite(Number(settings.scale))
     ? Math.round(Math.max(0.7, Math.min(1.3, Number(settings.scale))) * 100) / 100
     : companionSettings.scale,
-  visible: typeof settings.visible === 'boolean' ? settings.visible : companionSettings.visible
+  visible: typeof settings.visible === 'boolean' ? settings.visible : companionSettings.visible,
+  replyTemplate: typeof settings.replyTemplate === 'string' && settings.replyTemplate.trim().length > 0
+    ? settings.replyTemplate.trim().slice(0, 80)
+    : companionSettings.replyTemplate
 });
 const loadCompanionSettings = () => {
   try {
@@ -139,6 +142,24 @@ const isCursorOnCompanionModel = () => {
   const point = screen.getCursorScreenPoint();
   return point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
 };
+const companionMenuAnchor = () => ({
+  x: 320 - companionSettings.scale * 60,
+  y: 350 - companionSettings.scale * 145
+});
+const isCursorOnCompanionBubble = () => {
+  if (!companionOverlayState.menuOpen) return false;
+  const bounds = companionModelBounds();
+  if (!bounds || !companionWindow) return false;
+  const [windowX, windowY] = companionWindow.getPosition();
+  const anchor = companionMenuAnchor();
+  const offsets = [[-71, 65], [-126, 12], [-130, -55], [-79, -108], [-8, -129]];
+  const point = screen.getCursorScreenPoint();
+  return offsets.some(([offsetX, offsetY]) => {
+    const x = windowX + 60 + anchor.x + offsetX;
+    const y = windowY + 70 + anchor.y + offsetY;
+    return point.x >= x && point.x <= x + 44 && point.y >= y && point.y <= y + 44;
+  });
+};
 
 const keyboardKeyMap = new Map<number, string>([
   [UiohookKey.A, 'KeyA'], [UiohookKey.B, 'KeyB'], [UiohookKey.C, 'KeyC'], [UiohookKey.D, 'KeyD'], [UiohookKey.E, 'KeyE'], [UiohookKey.F, 'KeyF'], [UiohookKey.G, 'KeyG'], [UiohookKey.H, 'KeyH'], [UiohookKey.I, 'KeyI'], [UiohookKey.J, 'KeyJ'], [UiohookKey.K, 'KeyK'], [UiohookKey.L, 'KeyL'], [UiohookKey.M, 'KeyM'], [UiohookKey.N, 'KeyN'], [UiohookKey.O, 'KeyO'], [UiohookKey.P, 'KeyP'], [UiohookKey.Q, 'KeyQ'], [UiohookKey.R, 'KeyR'], [UiohookKey.S, 'KeyS'], [UiohookKey.T, 'KeyT'], [UiohookKey.U, 'KeyU'], [UiohookKey.V, 'KeyV'], [UiohookKey.W, 'KeyW'], [UiohookKey.X, 'KeyX'], [UiohookKey.Y, 'KeyY'], [UiohookKey.Z, 'KeyZ'],
@@ -165,7 +186,7 @@ const showCompanion = () => {
 
 const hideCompanion = () => {
   companionSettings.visible = false;
-  companionOverlayActive = false;
+  companionOverlayState = { menuOpen: false, settingsOpen: false };
   companionPointerDown = null;
   saveCompanionSettings();
   companionWindow?.hide();
@@ -315,7 +336,7 @@ app.whenReady().then(() => {
   // Native drag regions do not emit DOM click events. Track a global press and
   // release so the complete scaled model can both drag and open its menu.
   uIOhook.on('mousedown', (event) => {
-    if (Number(event.button) !== 1 || companionOverlayActive || !isCursorOnCompanionModel()) return;
+    if (Number(event.button) !== 1 || companionOverlayState.settingsOpen || isCursorOnCompanionBubble() || !isCursorOnCompanionModel()) return;
     companionPointerDown = screen.getCursorScreenPoint();
   });
   uIOhook.on('mouseup', (event) => {
@@ -323,17 +344,21 @@ app.whenReady().then(() => {
     const start = companionPointerDown;
     companionPointerDown = null;
     const end = screen.getCursorScreenPoint();
-    if (companionOverlayActive || Math.hypot(end.x - start.x, end.y - start.y) > 6 || !isCursorOnCompanionModel()) return;
+    if (companionOverlayState.settingsOpen || isCursorOnCompanionBubble() || Math.hypot(end.x - start.x, end.y - start.y) > 6 || !isCursorOnCompanionModel()) return;
     companionWindow?.webContents.send('bongo:toggle-menu');
   });
   uIOhook.start();
 
   ipcMain.handle('desktop:notify', (_event, payload: { title?: string; body?: string }) => {
-    if (!Notification.isSupported()) return;
+    // The pet bubble is the fallback when Windows notifications are unavailable
+    // or disabled by the operating system.
+    companionWindow?.webContents.send('bongo:message', { message: payload.body || '' });
+    if (!Notification.isSupported()) return { supported: false };
     new Notification({
       title: payload.title || 'LecPunch Election',
       body: payload.body || ''
     }).show();
+    return { supported: true };
   });
 
   ipcMain.handle('desktop:hide-to-tray', () => mainWindow?.hide());
@@ -369,8 +394,8 @@ app.whenReady().then(() => {
     showCompanion();
     return companionSettings;
   });
-  ipcMain.on('desktop:set-companion-overlay-active', (_event, active: boolean) => {
-    companionOverlayActive = Boolean(active);
+  ipcMain.on('desktop:set-companion-overlay-state', (_event, state: Partial<typeof companionOverlayState>) => {
+    companionOverlayState = { ...companionOverlayState, ...state };
   });
   ipcMain.handle('desktop:show-main', (_event, action: 'schedule' | 'shop') => {
     showWindow();
