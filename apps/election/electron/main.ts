@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, shell, Tray } from 'electron';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +24,7 @@ type QuietNotificationResult = { enabled: boolean; managedApps: string[]; messag
 let companionSettings: CompanionSettings = { scale: 1, visible: true, replyTemplate: '{username} {message}' };
 let quietNotificationConsentGranted = false;
 const quietNotificationBackup = new Map<string, string | null>();
+let quietPopupGuard: ChildProcess | null = null;
 
 const companionSettingsPath = () => path.join(app.getPath('userData'), 'companion-settings.json');
 const normalizeCompanionSettings = (settings: Partial<CompanionSettings>): CompanionSettings => ({
@@ -66,6 +67,63 @@ const runReg = (args: string[]) => new Promise<{ stdout: string }>((resolve, rej
   });
 });
 const notificationSettingsRoot = 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings';
+const quietPopupGuardPath = () => path.join(app.getPath('userData'), 'quiet-popup-guard.ps1');
+const quietPopupGuardScript = `
+$source = @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public static class LecPunchQuietWindowGuard {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr data);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int command);
+}
+'@
+Add-Type -TypeDefinition $source
+while ($true) {
+  [LecPunchQuietWindowGuard]::EnumWindows({
+    param($handle, $unused)
+    if (-not [LecPunchQuietWindowGuard]::IsWindowVisible($handle)) { return $true }
+    $processId = [uint32]0
+    [LecPunchQuietWindowGuard]::GetWindowThreadProcessId($handle, [ref]$processId) | Out-Null
+    try { $process = Get-Process -Id $processId -ErrorAction Stop } catch { return $true }
+    if ($process.ProcessName -notmatch '^(QQ|WeChat|Weixin)$') { return $true }
+    $rect = [LecPunchQuietWindowGuard+RECT]::new()
+    [LecPunchQuietWindowGuard]::GetWindowRect($handle, [ref]$rect) | Out-Null
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    # Preserve full chat windows. QQ/WeChat native notification panes are
+    # short, secondary top-level windows; hide only that constrained shape.
+    if ($width -ge 160 -and $width -le 700 -and $height -ge 55 -and $height -le 420) {
+      [LecPunchQuietWindowGuard]::ShowWindow($handle, 0) | Out-Null
+    }
+    return $true
+  }, [IntPtr]::Zero) | Out-Null
+  Start-Sleep -Milliseconds 150
+}
+`;
+const setQuietNativePopupGuard = (enabled: boolean) => {
+  if (process.platform !== 'win32') return false;
+  if (!enabled) {
+    quietPopupGuard?.kill();
+    quietPopupGuard = null;
+    return false;
+  }
+  if (quietPopupGuard && !quietPopupGuard.killed) return true;
+  try {
+    fs.writeFileSync(quietPopupGuardPath(), quietPopupGuardScript, 'utf8');
+    quietPopupGuard = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', quietPopupGuardPath()], { windowsHide: true, stdio: 'ignore' });
+    quietPopupGuard.once('exit', () => { quietPopupGuard = null; });
+    return true;
+  } catch {
+    quietPopupGuard = null;
+    return false;
+  }
+};
 const quietAppKind = (key: string): '微信' | 'QQ' | null => {
   const appId = key.split('\\').pop()?.toLowerCase() ?? '';
   // Keep this deliberately strict: QQLive and other Tencent products must not
@@ -106,6 +164,7 @@ const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotifica
     saveQuietNotificationSettings();
   }
   let keys: string[] = [];
+  let popupGuardActive = false;
   try {
     keys = await findQuietAppNotificationKeys();
     for (const key of keys) {
@@ -121,11 +180,13 @@ const setQuietAppNotifications = async (enabled: boolean): Promise<QuietNotifica
     if (!enabled) quietNotificationBackup.clear();
     saveQuietNotificationSettings();
   } catch {
-    return { enabled: false, managedApps: [], message: 'Windows 通知设置暂时无法修改；可改用 Windows 专注助手。' };
+    popupGuardActive = setQuietNativePopupGuard(enabled);
+    return { enabled: false, managedApps: [], message: popupGuardActive ? 'Windows 横幅设置暂时无法修改，但 QQ/微信原生通知窗拦截已开启。' : 'Windows 通知设置暂时无法修改；可改用 Windows 专注助手。' };
   }
+  popupGuardActive = setQuietNativePopupGuard(enabled);
   const managedApps = keys.map((key) => quietAppKind(key)).filter((name): name is '微信' | 'QQ' => Boolean(name));
-  if (!managedApps.length) return { enabled, managedApps: [], message: '未发现已登记的 QQ 或微信 Windows 通知。请先让对应软件产生一次系统通知后，再重新开启免提示模式。' };
-  return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已暂时关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知。` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置。` };
+  if (!managedApps.length) return { enabled, managedApps: [], message: enabled && popupGuardActive ? '未发现已登记的 Windows 横幅；QQ/微信原生通知窗拦截已开启。' : '未发现已登记的 QQ 或微信 Windows 通知。请先让对应软件产生一次系统通知后，再重新开启免提示模式。' };
+  return { enabled, managedApps: [...new Set(managedApps)], message: enabled ? `已关闭 ${[...new Set(managedApps)].join('、')} 的 Windows 通知${popupGuardActive ? '，并开启原生通知窗拦截。' : '。'}` : `已恢复 ${[...new Set(managedApps)].join('、')} 的原通知设置，并停止原生通知窗拦截。` };
 };
 const companionDimensions = () => ({ width: COMPANION_WINDOW_WIDTH, height: COMPANION_WINDOW_HEIGHT });
 const companionModelBounds = () => {
@@ -422,6 +483,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  setQuietNativePopupGuard(false);
   uIOhook.stop();
 });
 
