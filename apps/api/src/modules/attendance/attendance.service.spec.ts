@@ -25,6 +25,14 @@ describe('AttendanceService', () => {
   const attendanceModel = { create, findOne, find, findOneAndUpdate, aggregate } as any;
   const adjustmentModel = { create: adjustmentCreate, aggregate: adjustmentAggregate, find: adjustmentFind } as any;
   let service: AttendanceService;
+  let bucket: { version: number; entries: any[] };
+  const bucketUpdate = vi.fn();
+  const bucketModel = {
+    updateOne: vi.fn(() => ({ exec: vi.fn().mockResolvedValue({}) })),
+    find: vi.fn(() => ({ lean: () => ({ exec: vi.fn().mockResolvedValue([]) }) })),
+    findOne: vi.fn(() => ({ exec: vi.fn().mockImplementation(async () => structuredClone(bucket)) })),
+    findOneAndUpdate: bucketUpdate
+  };
 
   const activeSession = (overrides: Record<string, unknown> = {}) => ({
     id: 'session-1', teamId: 'team-1', userId: 'user-1', checkInAt: new Date('2026-04-10T00:00:00.000Z'),
@@ -34,6 +42,10 @@ describe('AttendanceService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    bucket = { version: 0, entries: [] };
+    bucketUpdate.mockImplementation((_query, update) => ({ exec: async () => {
+      bucket.entries.push(update.$push.entries); bucket.version++; return bucket;
+    } }));
     networkPolicyService.assertIpAllowed.mockResolvedValue(undefined);
     adjustmentFind.mockReturnValue({ sort: vi.fn().mockReturnValue({ exec: vi.fn().mockResolvedValue([]) }) });
     service = new AttendanceService(
@@ -41,7 +53,7 @@ describe('AttendanceService', () => {
       adjustmentModel,
       networkPolicyService as any,
       usersService as any,
-      pointsService as any
+      pointsService as any, bucketModel as any
     );
   });
 
@@ -228,7 +240,7 @@ describe('AttendanceService', () => {
       id: 'member-1',
       teamId: 'team-1',
       username: 'alice',
-      displayName: 'Alice'
+      displayName: 'Alice', status: 'active'
     });
     aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 4_200 }]) });
     adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
@@ -249,21 +261,17 @@ describe('AttendanceService', () => {
         { username: 'Alice', operation: 'add', durationSeconds: 300, reason: '补录' }
       )
     ).resolves.toMatchObject({
-      adjustmentId: 'adjustment-1',
+      adjustmentId: expect.any(String),
       previousDurationSeconds: 4_200,
       resultingDurationSeconds: 4_500
     });
 
-    expect(adjustmentCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamId: 'team-1',
-        userId: 'member-1',
-        weekKey: '2026-08-31',
-        operation: 'add',
-        durationSeconds: 300,
-        createdBy: 'admin-1'
-      })
+    expect(bucketUpdate).toHaveBeenCalledWith(
+      { teamId: 'team-1', userId: 'member-1', weekKey: '2026-08-31', version: 0 },
+      { $inc: { version: 1 }, $push: { entries: expect.objectContaining({ operation: 'add', durationSeconds: 300, createdBy: 'admin-1' }) } },
+      { new: true }
     );
+    expect(adjustmentCreate).not.toHaveBeenCalled();
     expect(pointsService.syncAttendancePoints).not.toHaveBeenCalled();
   });
 
@@ -272,7 +280,7 @@ describe('AttendanceService', () => {
       id: 'member-1',
       teamId: 'team-1',
       username: 'alice',
-      displayName: 'Alice'
+      displayName: 'Alice', status: 'active'
     });
     aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 120 }]) });
     adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: -30 }]) });

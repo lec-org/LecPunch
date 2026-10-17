@@ -9,6 +9,10 @@ interface AuthSnapshot {
 export interface AuthStoreState {
   auth: AuthSnapshot;
   authInitializing: boolean;
+  sessionError: string | null;
+  retrySession: number;
+  setSessionError: (error: string | null) => void;
+  retrySessionRestore: () => void;
   setAuth: (payload: AuthSnapshot) => void;
   updateUser: (patch: Partial<User>) => void;
   setAuthInitializing: (value: boolean) => void;
@@ -20,6 +24,9 @@ const EMPTY_AUTH: AuthSnapshot = { token: null, user: null };
 export const useAuthStore = create<AuthStoreState>((set) => ({
   auth: EMPTY_AUTH,
   authInitializing: true,
+  sessionError: null, retrySession: 0,
+  setSessionError: (sessionError) => set({ sessionError }),
+  retrySessionRestore: () => set(state => ({ retrySession: state.retrySession + 1, sessionError: null })),
   setAuth: (payload) => set({ auth: payload }),
   updateUser: (patch) =>
     set((state) => ({

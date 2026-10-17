@@ -1,13 +1,12 @@
-import { Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, UnsupportedMediaTypeException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, UnsupportedMediaTypeException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { basename, isAbsolute, relative, resolve } from 'path';
 import { Model } from 'mongoose';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UsersService } from '../users/users.service';
 import type { CreateReportDto } from './dto/create-report.dto';
 import type { ReportImage } from './schemas/report.schema';
 import { Report, type ReportDocument } from './schemas/report.schema';
@@ -42,7 +41,6 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @InjectModel(Report.name) private readonly reportModel: Model<ReportDocument>,
-    private readonly usersService: UsersService,
     private readonly notificationsService: NotificationsService,
     configService: ConfigService
   ) {
@@ -54,8 +52,10 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await mkdir(this.imageDirectory, { recursive: true });
     await this.cleanupExpiredImages();
+    await this.deliverPendingNotifications();
     this.cleanupTimer = setInterval(() => {
       void this.cleanupExpiredImages();
+      void this.deliverPendingNotifications();
     }, CLEANUP_INTERVAL_MS);
     this.cleanupTimer.unref();
   }
@@ -72,7 +72,19 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       throw new UnsupportedMediaTypeException(`At most ${MAX_REPORT_IMAGES} images can be uploaded`);
     }
 
+    if (!description) throw new BadRequestException('消息内容不能为空');
     this.validateImages(files);
+    const requestHash = createHash('sha256').update(JSON.stringify({ description,
+      files: files.map(file => ({ type: file.mimetype, digest: createHash('sha256').update(file.buffer).digest('hex') }))
+    })).digest('hex');
+    if (dto.requestKey) {
+      const existing = await this.reportModel.findOne({ teamId: user.teamId, reporterUserId: user.userId, requestKey: dto.requestKey }).exec();
+      if (existing) {
+        if (existing.requestHash !== requestHash) throw new ConflictException('同一请求标识不能提交不同消息');
+        await this.tryDeliver(existing);
+        return this.toSubmissionReceipt(existing);
+      }
+    }
     const images = await this.persistImages(files);
     const imagesExpireAt = images.length > 0 ? this.getImagesExpireAt() : null;
 
@@ -86,26 +98,53 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
         description,
         images,
         imagesExpireAt,
-        imagesPurgedAt: null
+        imagesPurgedAt: null,
+        requestKey: dto.requestKey, requestHash, notificationPending: true
       });
 
     } catch (error) {
       await this.deleteImages(images);
+      if (dto.requestKey && (error as { code?: number }).code === 11000) {
+        const existing = await this.reportModel.findOne({ teamId: user.teamId, reporterUserId: user.userId, requestKey: dto.requestKey }).exec();
+        if (existing && existing.requestHash === requestHash) return this.toSubmissionReceipt(existing);
+        throw new ConflictException('同一请求标识不能提交不同消息');
+      }
       throw error;
     }
 
-    const adminUserIds = await this.usersService.findActiveAdminIds(user.teamId);
-    await this.notificationsService.createForReportSubmitted({
-      teamId: user.teamId,
-      adminUserIds,
-      reportId: report.id,
-      reporterUserId: user.userId,
-      reporterDisplayName: user.displayName,
-      imageCount: images.length,
-      imagesExpireAt
-    });
+    await this.tryDeliver(report);
 
-    return this.toReportItem(report);
+    return this.toSubmissionReceipt(report);
+  }
+
+  private async tryDeliver(report: ReportDocument) {
+    if (!report.notificationPending) return;
+    try {
+      await this.notificationsService.createForReportSubmitted({
+        teamId: report.teamId, reportId: report.id, reporterUserId: report.reporterUserId,
+        reporterDisplayName: report.reporterDisplayName, imageCount: report.images.length,
+        imagesExpireAt: report.imagesExpireAt
+      });
+      await this.reportModel.updateOne({ _id: report.id, notificationPending: true }, { $set: { notificationPending: false } }).exec();
+    } catch {
+      this.logger.warn('Message saved; notification remains pending for retry');
+    }
+  }
+
+  async deliverPendingNotifications() {
+    try {
+      const reports = await this.reportModel.find({ notificationPending: true }).sort({ createdAt: 1 }).limit(100).exec();
+      for (const report of reports) await this.tryDeliver(report);
+    } catch { this.logger.warn('Pending message notifications will be retried'); }
+  }
+
+  async processReport(user: AuthUser, reportId: string, input: { status: 'open' | 'processed'; note?: string }) {
+    const report = await this.reportModel.findOneAndUpdate({ _id: reportId, teamId: user.teamId }, { $set: {
+      processingStatus: input.status, processingNote: input.note?.trim() ?? '',
+      processedBy: user.userId, processedByDisplayName: user.displayName, processedAt: new Date()
+    } }, { new: true }).exec();
+    if (!report) throw new NotFoundException('Report not found');
+    return this.toAdminReportItem(report);
   }
 
   async listTeamReports(teamId: string, page: number, pageSize: number) {
@@ -120,7 +159,7 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     return {
-      items: reports.map((report) => this.toReportItem(report)),
+      items: reports.map((report) => this.toAdminReportItem(report)),
       page,
       pageSize,
       total
@@ -239,7 +278,11 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private toReportItem(report: ReportDocument) {
+  private toSubmissionReceipt(report: ReportDocument) {
+    return { id: report.id, createdAt: report.createdAt.toISOString(), status: 'submitted' as const };
+  }
+
+  private toAdminReportItem(report: ReportDocument) {
     return {
       id: report.id,
       teamId: report.teamId,
@@ -257,6 +300,10 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       })),
       imagesExpireAt: report.imagesExpireAt?.toISOString() ?? null,
       imagesPurgedAt: report.imagesPurgedAt?.toISOString() ?? null,
+      processingStatus: report.processingStatus ?? 'open',
+      processingNote: report.processingNote ?? '', processedBy: report.processedBy ?? null,
+      processedByDisplayName: report.processedByDisplayName ?? null,
+      processedAt: report.processedAt?.toISOString() ?? null,
       createdAt: report.createdAt.toISOString()
     };
   }

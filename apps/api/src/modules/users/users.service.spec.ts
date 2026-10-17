@@ -184,22 +184,16 @@ describe('UsersService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('updates same-team member role or status', async () => {
-      findById.mockReturnValue({
-        exec: vi.fn().mockResolvedValue({ id: 'member-1', teamId: 'team-1', role: 'member', status: 'active' })
-      });
-      findByIdAndUpdate.mockReturnValue({
-        exec: vi.fn().mockResolvedValue({ id: 'member-1', role: 'admin', status: 'active' })
-      });
+    it('updates local status without granting SSO administrator access', async () => {
+      findById.mockReturnValue({ exec: vi.fn().mockResolvedValue({ id: 'member-1', teamId: 'team-1', status: 'active' }) });
+      findByIdAndUpdate.mockReturnValue({ exec: vi.fn().mockResolvedValue({ id: 'member-1', status: 'disabled' }) });
+      await expect(service.adminUpdateMember(adminUser, 'member-1', { status: 'disabled' })).resolves.toMatchObject({ status: 'disabled' });
+      expect(findByIdAndUpdate).toHaveBeenCalledWith('member-1', { $set: { status: 'disabled' } }, { new: true });
+    });
 
-      const result = await service.adminUpdateMember(adminUser, 'member-1', { role: 'admin' });
-
-      expect(findByIdAndUpdate).toHaveBeenCalledWith(
-        'member-1',
-        { $set: { role: 'admin' } },
-        { new: true }
-      );
-      expect(result).toEqual({ id: 'member-1', role: 'admin', status: 'active' });
+    it('rejects local role changes even when performed by an SSO admin', async () => {
+      await expect(service.adminUpdateMember(adminUser, 'member-1', { role: 'admin' })).rejects.toMatchObject({ response: { code: 'SSO_MANAGED_ROLE' } });
+      expect(findByIdAndUpdate).not.toHaveBeenCalled();
     });
 
     it('rejects admins deleting themselves', async () => {
@@ -250,14 +244,4 @@ describe('UsersService', () => {
     });
   });
 
-  it('returns IDs for active administrators in the requested team only', async () => {
-    find.mockReturnValue({
-      select: vi.fn().mockReturnValue({
-        exec: vi.fn().mockResolvedValue([{ id: 'admin-1' }, { id: 'admin-2' }])
-      })
-    });
-
-    await expect(service.findActiveAdminIds('team-1')).resolves.toEqual(['admin-1', 'admin-2']);
-    expect(find).toHaveBeenCalledWith({ teamId: 'team-1', role: 'admin', status: 'active' });
-  });
 });

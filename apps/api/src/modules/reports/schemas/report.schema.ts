@@ -47,6 +47,15 @@ export class Report {
   @Prop({ type: Date, default: null })
   imagesPurgedAt!: Date | null;
 
+  @Prop({ type: String }) requestKey?: string;
+  @Prop({ type: String }) requestHash?: string;
+  @Prop({ type: Boolean, default: false }) notificationPending?: boolean;
+  @Prop({ type: String, enum: ['open', 'processed'], default: 'open' }) processingStatus?: 'open' | 'processed';
+  @Prop({ type: String, maxlength: 2000 }) processingNote?: string;
+  @Prop({ type: String }) processedBy?: string;
+  @Prop({ type: String }) processedByDisplayName?: string;
+  @Prop({ type: Date }) processedAt?: Date;
+
   createdAt!: Date;
   updatedAt!: Date;
 }
@@ -54,5 +63,7 @@ export class Report {
 export type ReportDocument = HydratedDocument<Report>;
 export const ReportSchema = SchemaFactory.createForClass(Report);
 
+ReportSchema.index({ teamId: 1, reporterUserId: 1, requestKey: 1 }, { unique: true, partialFilterExpression: { requestKey: { $type: 'string' } } });
+ReportSchema.index({ notificationPending: 1, createdAt: 1 });
 ReportSchema.index({ teamId: 1, createdAt: -1 });
 ReportSchema.index({ imagesExpireAt: 1, imagesPurgedAt: 1 });

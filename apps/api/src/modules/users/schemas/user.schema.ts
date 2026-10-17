@@ -52,6 +52,9 @@ export class User {
   @Prop({ type: String })
   avatarUrl?: string;
 
+  @Prop({ type: Boolean, default: true })
+  adminMessageBadgeEnabled?: boolean;
+
   @Prop({ type: String })
   avatarBase64?: string;
 

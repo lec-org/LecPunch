@@ -1,24 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, BellRing, Clock3 } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import {
-  ATTENDANCE_MAX_SECONDS,
   ERROR_CODES,
   WARNING_THRESHOLD_SECONDS,
   type TeamActiveAttendanceItem,
   type TeamWeeklyStatItem
 } from '@lecpunch/shared';
-import { Alert, Badge, Button } from '@lecpunch/ui';
+import { Alert, Button } from '@lecpunch/ui';
 import { WeekSelector } from '@/app/components/WeekSelector';
-import { useAuthStore } from '@/app/store/auth-store';
 import { useUIStore } from '@/app/store/ui-store';
 import { checkInAttendance, checkOutAttendance } from '@/features/attendance/attendance.api';
 import { DashboardContextProvider } from '@/features/dashboard/context/DashboardContext';
 import { useDashboardData } from '@/features/dashboard/useDashboardData';
-import { useDashboardNotifications } from '@/features/notifications/useDashboardNotifications';
 import { useSecondsTicker } from '@/shared/hooks/useSecondsTicker';
 import { getApiErrorCode, getApiErrorMessage } from '@/shared/lib/api-error';
-import { formatDateTime, formatDuration, formatWeekRangeLabel } from '@/shared/lib/time';
+import { formatDuration } from '@/shared/lib/time';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
 import { showToast } from '@/shared/ui/toast';
@@ -32,10 +29,9 @@ export const DashboardPage = () => {
   const navigate = useNavigate();
   const selectedWeek = useUIStore((state) => state.selectedWeek);
   const setSelectedWeek = useUIStore((state) => state.setSelectedWeek);
-  const token = useAuthStore((state) => state.auth.token);
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [liveElapsedSeconds, setLiveElapsedSeconds] = useState(0);
+  const [liveElapsed, setLiveElapsed] = useState<{ sessionId: string; seconds: number } | null>(null);
 
   const {
     attendance,
@@ -49,13 +45,6 @@ export const DashboardPage = () => {
     error,
     refresh
   } = useDashboardData(selectedWeek);
-  const {
-    notifications,
-    error: notificationError,
-    pendingIds,
-    acknowledge
-  } = useDashboardNotifications(token);
-
   const weekLabel = WEEK_LABELS[selectedWeek];
   const currentSession = attendance?.session ?? null;
   const isCurrentWeek = selectedWeek === 'current';
@@ -71,10 +60,13 @@ export const DashboardPage = () => {
   const selectedWeekSessionsCount = selectedWeekStat?.sessionsCount ?? selectedWeekRecords.length;
 
   useEffect(() => {
-    setLiveElapsedSeconds(currentSession?.elapsedSeconds ?? 0);
+    setLiveElapsed(currentSession ? { sessionId: currentSession.id, seconds: currentSession.elapsedSeconds } : null);
   }, [currentSession?.id, currentSession?.elapsedSeconds]);
 
-  useSecondsTicker(() => setLiveElapsedSeconds((value) => value + 1), isCurrentWeek && isCheckedIn);
+  useSecondsTicker(() => setLiveElapsed(value => currentSession ? {
+    sessionId: currentSession.id,
+    seconds: (value?.sessionId === currentSession.id ? value.seconds : currentSession.elapsedSeconds) + 1
+  } : null), isCurrentWeek && isCheckedIn);
 
   useEffect(() => {
     if (!isCurrentWeek || !isCheckedIn) return;
@@ -82,7 +74,7 @@ export const DashboardPage = () => {
     return () => window.clearInterval(timer);
   }, [isCheckedIn, isCurrentWeek, refresh]);
 
-  const currentDuration = currentSession ? liveElapsedSeconds : 0;
+  const currentDuration = currentSession ? (liveElapsed?.sessionId === currentSession.id ? liveElapsed.seconds : currentSession.elapsedSeconds) : 0;
   const isWarning = currentDuration >= WARNING_THRESHOLD_SECONDS;
   const isNearLimit = currentDuration >= WARNING_THRESHOLD_SECONDS;
 
@@ -135,17 +127,6 @@ export const DashboardPage = () => {
     navigate(`/members/${member.memberKey}/records`, {
       state: { displayName: member.displayName }
     });
-  };
-
-  const handleAcknowledgeNotification = async (notificationId: string) => {
-    await acknowledge(notificationId);
-  };
-
-  const handleOpenRecords = async (notificationId: string) => {
-    const confirmed = await acknowledge(notificationId);
-    if (confirmed) {
-      navigate('/records');
-    }
   };
 
   const dashboardContextValue = useMemo(
@@ -209,82 +190,8 @@ export const DashboardPage = () => {
         </Alert>
       ) : null}
 
-      {notificationError ? (
-        <Alert variant="error" icon={<AlertTriangle className="h-4 w-4" />}>
-          {notificationError}
-        </Alert>
-      ) : null}
-
-      {notifications.length > 0 ? (
-        <PageSection padded className="border-amber-200 bg-gradient-to-r from-amber-50 via-white to-orange-50">
-          <div className="space-y-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="rounded-2xl bg-amber-100 p-2 text-amber-700">
-                  <BellRing className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-semibold text-gray-900">待确认通知</h2>
-                    <Badge variant="warning">{notifications.length}</Badge>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              {notifications.map((notification) => (
-                <div
-                  key={notification.id}
-                  className="rounded-2xl border border-amber-200 bg-white/90 p-4 shadow-sm"
-                >
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-semibold text-gray-900">{notification.title}</p>
-                        <Badge variant="warning">待处理</Badge>
-                      </div>
-                      <p className="text-sm leading-6 text-gray-700">{notification.message}</p>
-                      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
-                        <span className="inline-flex items-center gap-1">
-                          <Clock3 className="h-3.5 w-3.5" />
-                          {formatDateTime(notification.createdAt)}
-                        </span>
-                        {notification.type === 'attendance.record_marked' ? (
-                          <span>关联周：{formatWeekRangeLabel(notification.payload.weekKey)}</span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        loading={pendingIds.includes(notification.id)}
-                        onClick={() => void handleAcknowledgeNotification(notification.id)}
-                      >
-                        知道了
-                      </Button>
-                      <Button
-                        size="sm"
-                        loading={pendingIds.includes(notification.id)}
-                        onClick={() => void handleOpenRecords(notification.id)}
-                      >
-                        查看记录
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </PageSection>
-      ) : null}
-
       <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">工作台</h1>
-        </div>
+        <h1 className="text-2xl font-bold text-gray-900">工作台</h1>
         <WeekSelector value={selectedWeek} onChange={setSelectedWeek} />
       </div>
 

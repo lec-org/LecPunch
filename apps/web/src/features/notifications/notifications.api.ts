@@ -1,3 +1,4 @@
+import { getAccessToken, refreshAccessToken } from '@/shared/auth/logto';
 import type { NotificationItem } from '@lecpunch/shared';
 import { useAuthStore } from '@/app/store/auth-store';
 import { apiClient } from '@/shared/http/api-client';
@@ -5,9 +6,10 @@ import { apiClient } from '@/shared/http/api-client';
 export interface NotificationFilters {
   status?: 'unacked' | 'all';
   limit?: number;
+  before?: string;
 }
 
-export type NotificationStreamEventName = 'connected' | 'notification.created' | 'heartbeat';
+export type NotificationStreamEventName = 'connected' | 'notification.created' | 'notifications.changed' | 'heartbeat';
 
 export interface NotificationStreamEvent {
   event: NotificationStreamEventName;
@@ -88,66 +90,58 @@ export const acknowledgeNotification = async (notificationId: string) => {
   return response.data;
 };
 
-export const connectNotificationStream = async (token: string, handlers: NotificationStreamHandlers) => {
-  const response = await fetch(buildApiUrl('/notifications/stream'), {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'text/event-stream'
-    },
-    signal: handlers.signal
-  });
+export const getNotificationPage = async (filters?: NotificationFilters, signal?: AbortSignal) => {
+  const response = await apiClient.get<NotificationListResponse & { nextCursor: string | null }>('/notifications/me', { params: filters, signal });
+  return response.data;
+};
+export const getUnreadCount = async () => (await apiClient.get<{ count: number; badgeCount: number }>('/notifications/me/unread-count')).data;
+export const getNotificationPreferences = async () => (await apiClient.get<{ adminMessageBadgeEnabled: boolean }>('/notifications/preferences')).data;
+export const setNotificationPreferences = async (enabled: boolean) => (await apiClient.patch('/notifications/preferences', { adminMessageBadgeEnabled: enabled })).data;
+export const publishNotice = async (input: { title: string; message: string; requestKey: string }) => (await apiClient.post<NotificationItem>('/notifications/admin/notices', input)).data;
+export const getSentNotifications = async () => (await apiClient.get<NotificationItem[]>('/notifications/admin/sent')).data;
+export const getNotificationReadStatus = async (id: string) => (await apiClient.get<{ userId: string; displayName: string; readAt: string | null }[]>(`/notifications/admin/${id}/read-status`)).data;
 
-  if (response.status === 401) {
-    resetAuth();
-    throw new Error('登录已失效，请重新登录');
-  }
-
-  if (!response.ok || !response.body) {
-    throw new Error(`通知连接失败 (${response.status})`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
+export const connectNotificationStream = async (_loginSnapshot: string, handlers: NotificationStreamHandlers) => {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (handlers.signal.aborted) return;
+      const token = await (attempt === 0 ? getAccessToken() : refreshAccessToken());
+      if (handlers.signal.aborted) return;
+      if (!token) throw new Error('登录凭据不可用，请重新登录');
+      response = await fetch(buildApiUrl('/notifications/stream'), {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' }, signal: handlers.signal
+      });
+      if (handlers.signal.aborted) { await response.body?.cancel(); return; }
+      if (response.status !== 401) break;
+      await response.body?.cancel();
+      if (handlers.signal.aborted) return;
+      if (attempt === 1) { resetAuth(); throw new Error('登录已失效，请重新登录'); }
+    }
+    if (!response?.ok || !response.body) {
+      throw Object.assign(new Error(response?.status === 403 ? '没有通知访问权限，请联系管理员' : `通知连接失败 (${response?.status})`), { status: response?.status });
+    }
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
     while (!handlers.signal.aborted) {
       const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-
+      if (done) break;
       buffer += decoder.decode(value, { stream: true });
-
-      let boundaryIndex = buffer.indexOf('\n\n');
-      while (boundaryIndex >= 0) {
-        const chunk = buffer.slice(0, boundaryIndex);
-        buffer = buffer.slice(boundaryIndex + 2);
-        const parsed = parseEventChunk(chunk);
-        if (parsed) {
-          handlers.onEvent(parsed);
-        }
-        boundaryIndex = buffer.indexOf('\n\n');
+      buffer = buffer.replace(/\r\n/g, '\n');
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const event = parseEventChunk(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        if (event) handlers.onEvent(event);
+        boundary = buffer.indexOf('\n\n');
       }
     }
-
-    buffer += decoder.decode();
-    const parsed = parseEventChunk(buffer);
-    if (parsed) {
-      handlers.onEvent(parsed);
-    }
+    const event = parseEventChunk(buffer + decoder.decode());
+    if (event) handlers.onEvent(event);
+    if (!handlers.signal.aborted) handlers.onError?.(new Error('通知连接已断开'));
   } catch (error) {
-    if ((error as DOMException)?.name === 'AbortError' || handlers.signal.aborted) {
-      return;
-    }
-
-    handlers.onError?.(error);
-    return;
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (!handlers.signal.aborted) {
-    handlers.onError?.(new Error('通知连接已断开'));
-  }
+    if (!handlers.signal.aborted && (error as { name?: string }).name !== 'AbortError') handlers.onError?.(error);
+  } finally { reader?.releaseLock(); }
 };

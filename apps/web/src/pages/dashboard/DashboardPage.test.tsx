@@ -1,6 +1,6 @@
 import { createUserFixture } from '@/test/user-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { DashboardPage } from './DashboardPage';
@@ -48,6 +48,18 @@ describe('DashboardPage', () => {
     expect(await screen.findByRole('button', { name: /下卡/i })).toBeInTheDocument();
     expect(screen.getByText('04:45:00')).toBeInTheDocument();
     expect(screen.getByText(/还剩 15 分钟将达到 5 小时上限/i)).toBeInTheDocument();
+  });
+
+  it('preserves week selection after notifications move to the global layout', async () => {
+    mocks.getCurrentAttendance.mockResolvedValue({ hasActiveSession: false, session: null });
+    renderPage();
+    await screen.findByRole('button', { name: /上卡/i });
+    expect(screen.getByRole('heading', { name: '工作台' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '选择' })).toHaveTextContent('本周');
+    act(() => useUIStore.getState().setSelectedWeek('prev1'));
+    expect(useUIStore.getState().selectedWeek).toBe('prev1');
+    expect(screen.getByRole('combobox', { name: '选择' })).toHaveTextContent('上周');
+    expect(screen.queryByRole('button', { name: /上卡|下卡/i })).not.toBeInTheDocument();
   });
 
   it('does not send heartbeat requests while an active session is running', async () => {

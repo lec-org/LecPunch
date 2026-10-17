@@ -53,7 +53,7 @@ export const AdminMembersPage = () => {
     );
   }, [members, search]);
 
-  const applyMemberPatch = async (member: User, patch: { role?: User['role']; status?: User['status'] }) => {
+  const applyMemberPatch = async (member: User, patch: { status?: User['status'] }) => {
     setSavingUserId(member.id);
 
     try {
@@ -120,10 +120,8 @@ export const AdminMembersPage = () => {
       )
     },
     {
-      key: 'role',
-      header: '角色',
-      render: (value) =>
-        value === 'admin' ? <Badge variant="purple">管理员</Badge> : <Badge variant="gray">普通成员</Badge>
+      key: 'role', header: '权限来源',
+      render: (_, row) => row.id === currentUser?.id ? <Badge variant="purple">SSO 管理员</Badge> : <span className="text-xs text-gray-500">由 SSO 管理</span>
     },
     {
       key: 'status',
@@ -147,18 +145,6 @@ export const AdminMembersPage = () => {
 
         return (
           <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isSelf || isSaving}
-              onClick={() =>
-                void applyMemberPatch(row, {
-                  role: row.role === 'admin' ? 'member' : 'admin'
-                })
-              }
-            >
-              {row.role === 'admin' ? '降为成员' : '设为管理员'}
-            </Button>
             <Button
               variant={row.status === 'active' ? 'danger' : 'outline'}
               size="sm"
@@ -198,7 +184,7 @@ export const AdminMembersPage = () => {
           </div>
           <h1 className="text-2xl font-bold text-gray-900">成员管理</h1>
           <p className="mt-1 text-sm text-gray-500">
-            管理团队成员的角色、启用状态和账号销毁操作。普通成员无权访问此页面。
+            管理员权限由 SSO 决定；本页仅管理本应用启用状态和账号。启用不能替代 SSO 准入授权。
           </p>
         </div>
 

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { createHash } from 'crypto';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { NotFoundException, UnsupportedMediaTypeException } from '@nestjs/common';
 import { ReportsService } from './reports.service';
@@ -21,13 +22,16 @@ describe('ReportsService', () => {
   const find = vi.fn();
   const findOne = vi.fn();
   const findByIdAndUpdate = vi.fn();
+  const findOneAndUpdate = vi.fn();
   const countDocuments = vi.fn();
-  const reportModel = { create, find, findOne, findByIdAndUpdate, countDocuments } as any;
+  const updateOne = vi.fn(() => ({ exec: vi.fn().mockResolvedValue({ modifiedCount: 1 }) }));
+  const reportModel = { create, find, findOne, findOneAndUpdate, findByIdAndUpdate, countDocuments, updateOne } as any;
   const usersService = { findActiveAdminIds: vi.fn() };
   const notificationsService = { createForReportSubmitted: vi.fn() };
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(null) });
     directory = await mkdtemp(join(tmpdir(), 'lecpunch-report-images-'));
     const configService = {
       get: vi.fn((key: string) => {
@@ -39,7 +43,7 @@ describe('ReportsService', () => {
         return values[key];
       })
     };
-    service = new ReportsService(reportModel, usersService as any, notificationsService as any, configService as any);
+    service = new ReportsService(reportModel, notificationsService as any, configService as any);
   });
 
   afterEach(async () => {
@@ -47,7 +51,7 @@ describe('ReportsService', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it('stores a valid image, records a three-hour expiry, and notifies every active admin', async () => {
+  it('stores a valid image, records a three-hour expiry, and queues a role-scoped notification', async () => {
     create.mockImplementation(async (input: any) => ({
       ...input,
       id: 'report-1',
@@ -61,9 +65,7 @@ describe('ReportsService', () => {
       { buffer: image, mimetype: 'image/jpeg', size: image.length }
     ]);
 
-    expect(result.description).toBe('举报说明');
-    expect(result.images).toHaveLength(1);
-    expect(result.imagesExpireAt).not.toBeNull();
+    expect(result).toEqual({ id: 'report-1', createdAt: '2026-09-01T10:00:00.000Z', status: 'submitted' });
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         teamId: 'team-1',
@@ -76,11 +78,53 @@ describe('ReportsService', () => {
     await expect(readFile(join(directory, filename))).resolves.toEqual(image);
     expect(notificationsService.createForReportSubmitted).toHaveBeenCalledWith(
       expect.objectContaining({
-        adminUserIds: ['admin-1', 'admin-2'],
         reportId: 'report-1',
         imageCount: 1
       })
     );
+  });
+
+  const processedReport = () => ({
+    id: 'report-1', teamId: 'team-1', reporterUserId: user.userId,
+    reporterUsername: user.username, reporterDisplayName: user.displayName,
+    description: '成员消息', images: [], imagesExpireAt: null, imagesPurgedAt: null,
+    requestHash: createHash('sha256').update(JSON.stringify({ description: '成员消息', files: [] })).digest('hex'),
+    notificationPending: false, processingStatus: 'processed', processingNote: '管理员内部备注',
+    processedBy: 'admin-1', processedByDisplayName: '管理员', processedAt: new Date('2026-10-17T11:00:00Z'),
+    createdAt: new Date('2026-10-17T10:00:00Z')
+  });
+
+  it('returns the same safe receipt when a member retries a message after admin processing', async () => {
+    const report = processedReport();
+    findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(report) });
+    const result = await service.createReport(user, { description: report.description, requestKey: 'request-1' }, []);
+    expect(result).toEqual({ id: report.id, createdAt: report.createdAt.toISOString(), status: 'submitted' });
+    expect(create).not.toHaveBeenCalled();
+    expect(report.processingNote).toBe('管理员内部备注');
+  });
+
+  it('keeps the concurrent duplicate-insert return path restricted to the member receipt', async () => {
+    const report = processedReport();
+    findOne.mockReturnValueOnce({ exec: vi.fn().mockResolvedValue(null) })
+      .mockReturnValueOnce({ exec: vi.fn().mockResolvedValue(report) });
+    create.mockRejectedValueOnce(Object.assign(new Error('duplicate'), { code: 11000 }));
+    const result = await service.createReport(user, { description: report.description, requestKey: 'request-1' }, []);
+    expect(result).toEqual({ id: report.id, createdAt: report.createdAt.toISOString(), status: 'submitted' });
+  });
+
+  it('still rejects changed content with an existing request key', async () => {
+    findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(processedReport()) });
+    await expect(service.createReport(user, { description: '不同内容', requestKey: 'request-1' }, []))
+      .rejects.toMatchObject({ status: 409 });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('preserves internal processing fields in the administrator response', async () => {
+    const report = processedReport();
+    findOneAndUpdate.mockReturnValue({ exec: vi.fn().mockResolvedValue(report) });
+    const result = await service.processReport({ ...user, role: 'admin', userId: 'admin-1' }, report.id,
+      { status: 'processed', note: report.processingNote });
+    expect(result).toMatchObject({ processingNote: '管理员内部备注', processedBy: 'admin-1', processingStatus: 'processed' });
   });
 
   it('rejects a file that only claims to be an image', async () => {

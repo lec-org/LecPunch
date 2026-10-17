@@ -1,6 +1,8 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException, Injectable, BadRequestException, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
+import { createHash, randomUUID } from 'crypto';
+import { AttendanceAdjustmentBucket, AttendanceAdjustmentBucketDocument } from './schemas/attendance-adjustment-bucket.schema';
 import { AttendanceSession, AttendanceSessionDocument } from './schemas/attendance-session.schema';
 import {
   AttendanceDurationAdjustment,
@@ -14,7 +16,7 @@ import {
   ATTENDANCE_MAX_SECONDS,
   weeklyGoalSeconds
 } from '@lecpunch/shared';
-import { getShanghaiDateRange, getWeekKey, parseIsoWeekKey } from '../../common/utils/time.util';
+import { getShanghaiDateRange, getWeekKey, getIsoWeekKey, parseIsoWeekKey } from '../../common/utils/time.util';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { PointsService } from '../points/points.service';
 import type { AdjustCurrentWeekDurationDto } from './dto/adjust-current-week-duration.dto';
@@ -35,7 +37,7 @@ type DurationAdjustmentAggregate = {
 
 @Injectable()
 export class AttendanceService {
-  private readonly durationAdjustmentLocks = new Map<string, Promise<void>>();
+
 
   constructor(
     @InjectModel(AttendanceSession.name)
@@ -44,7 +46,9 @@ export class AttendanceService {
     private readonly attendanceDurationAdjustmentModel: Model<AttendanceDurationAdjustmentDocument>,
     private readonly networkPolicyService: NetworkPolicyService,
     private readonly usersService: UsersService,
-    @Optional() private readonly pointsService?: PointsService
+    @Optional() private readonly pointsService?: PointsService,
+    @Optional() @InjectModel(AttendanceAdjustmentBucket.name)
+    private readonly adjustmentBucketModel?: Model<AttendanceAdjustmentBucketDocument>
   ) {}
 
   async getCurrentSession(userId: string) {
@@ -224,64 +228,74 @@ export class AttendanceService {
     };
   }
 
-  async adjustCurrentWeekDuration(currentUser: AuthUser, input: AdjustCurrentWeekDurationDto) {
-    const username = input.username.trim().toLowerCase();
-    const targetUser = await this.usersService.findByUsername(username);
-    if (!targetUser) {
-      throw new NotFoundException({ code: 'ATTENDANCE_ADJUSTMENT_USER_NOT_FOUND', message: '用户不存在' });
-    }
-
-    if (targetUser.teamId !== currentUser.teamId) {
-      throw new ForbiddenException({
-        code: ERROR_CODES.ATTENDANCE_CROSS_TEAM_FORBIDDEN,
-        message: '不可调整其他团队成员的打卡时长'
-      });
-    }
-
-    const weekKey = getWeekKey(new Date());
-    const lockKey = `${currentUser.teamId}:${targetUser.id}:${weekKey}`;
-    return this.withDurationAdjustmentLock(lockKey, () =>
-      this.applyCurrentWeekDurationAdjustment(currentUser, targetUser, weekKey, input)
-    );
+  private async adjustmentTarget(currentUser: AuthUser, input: { userId?: string; username?: string }) {
+    const target = input.userId ? await this.usersService.findById(input.userId)
+      : input.username ? await this.usersService.findByUsername(input.username.trim().toLowerCase()) : null;
+    if (!target) throw new NotFoundException({ code: 'ATTENDANCE_ADJUSTMENT_USER_NOT_FOUND', message: '请选择有效成员' });
+    if (target.teamId !== currentUser.teamId) throw new ForbiddenException({ code: ERROR_CODES.ATTENDANCE_CROSS_TEAM_FORBIDDEN, message: '不可调整其他团队成员' });
+    if (input.userId && input.username && target.username !== input.username.trim().toLowerCase()) throw new BadRequestException('成员 ID 与用户名不一致');
+    if (target.status !== 'active') throw new BadRequestException('不可调整已停用成员');
+    return target;
   }
 
-  private async applyCurrentWeekDurationAdjustment(
-    currentUser: AuthUser,
-    targetUser: { id: string; username: string; displayName: string },
-    weekKey: string,
-    input: AdjustCurrentWeekDurationDto
-  ) {
-    const [recordedDurationSeconds, manualAdjustmentSeconds] = await Promise.all([
-      this.getRecordedWeekDurationSeconds(currentUser.teamId, targetUser.id, weekKey),
-      this.getManualAdjustmentSeconds(currentUser.teamId, targetUser.id, weekKey)
+  async adjustmentContext(currentUser: AuthUser, userId: string) {
+    const target = await this.adjustmentTarget(currentUser, { userId });
+    const weekKey = getWeekKey(new Date());
+    const [recorded, adjustment] = await Promise.all([
+      this.getRecordedWeekDurationSeconds(currentUser.teamId, target.id, weekKey),
+      this.getManualAdjustmentSeconds(currentUser.teamId, target.id, weekKey)
     ]);
+    return { userId: target.id, weekKey, isoWeek: getIsoWeekKey(new Date()), recordedDurationSeconds: recorded, manualAdjustmentSeconds: adjustment,
+      totalDurationSeconds: Math.max(0, recorded + adjustment) };
+  }
 
-    const previousDurationSeconds = recordedDurationSeconds + manualAdjustmentSeconds;
-    const deltaSeconds = input.operation === 'add' ? input.durationSeconds : -input.durationSeconds;
-    const resultingDurationSeconds = previousDurationSeconds + deltaSeconds;
-
-    if (resultingDurationSeconds < 0) {
-      throw new BadRequestException({
-        code: 'ATTENDANCE_DURATION_CANNOT_BE_NEGATIVE',
-        message: '扣减后的当前周打卡时长不能低于 0'
-      });
+  async adjustCurrentWeekDuration(currentUser: AuthUser, input: AdjustCurrentWeekDurationDto) {
+    if (!this.adjustmentBucketModel) throw new ServiceUnavailableException('时长调整存储尚未配置');
+    const target = await this.adjustmentTarget(currentUser, input);
+    const weekKey = getWeekKey(new Date());
+    if (input.expectedWeekKey && input.expectedWeekKey !== weekKey) throw new ConflictException('周次已变化，请刷新后重新确认');
+    if (input.requestKey && !input.reason?.trim()) throw new BadRequestException('调整原因不能为空');
+    const key = `${currentUser.userId}:${input.requestKey ?? randomUUID()}`;
+    const hash = createHash('sha256').update(JSON.stringify({ operation: input.operation, seconds: input.durationSeconds,
+      reason: input.reason?.trim() ?? '' })).digest('hex');
+    const scope = { teamId: currentUser.teamId, userId: target.id, weekKey };
+    try {
+      await this.adjustmentBucketModel.updateOne(scope, { $setOnInsert: { version: 0, entries: [] } }, { upsert: true }).exec();
+    } catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const bucket = await this.adjustmentBucketModel.findOne(scope).exec();
+      if (!bucket) throw new ServiceUnavailableException('时长调整状态不可用');
+      const previous = bucket.entries.find(entry => entry.requestKey === key);
+      if (previous) {
+        if (previous.requestHash !== hash) throw new ConflictException('同一请求标识不能提交不同调整');
+        return { ...previous, adjustmentId: previous.id, userId: target.id, displayName: target.displayName, weekKey };
+      }
+      if (bucket.entries.length >= 2000) throw new BadRequestException('本周调整次数达到上限，请联系维护者');
+      const [recorded, legacy] = await Promise.all([
+        this.getRecordedWeekDurationSeconds(scope.teamId, target.id, weekKey),
+        this.getLegacyAdjustmentSeconds(scope.teamId, target.id, weekKey)
+      ]);
+      const before = recorded + legacy + bucket.entries.reduce((n, e) => n + e.signedDurationSeconds, 0);
+      if (before < 0) throw new ConflictException('原始记录变化导致调整余额异常，请先核对历史记录');
+      const delta = input.operation === 'add' ? input.durationSeconds : -input.durationSeconds;
+      if (before + delta < 0) throw new BadRequestException({ code: 'ATTENDANCE_DURATION_CANNOT_BE_NEGATIVE', message: '扣减后的当前周打卡时长不能低于 0' });
+      const entry = { id: new Types.ObjectId().toString(), requestKey: key, requestHash: hash,
+        username: target.username, operation: input.operation, durationSeconds: input.durationSeconds,
+        signedDurationSeconds: delta, previousDurationSeconds: before, resultingDurationSeconds: before + delta,
+        reason: input.reason?.trim(), createdBy: currentUser.userId, createdAt: new Date() };
+      // Effective adjustment, audit and retry result are committed in one standalone-Mongo write.
+      const saved = await this.adjustmentBucketModel.findOneAndUpdate({ ...scope, version: bucket.version },
+        { $inc: { version: 1 }, $push: { entries: entry } }, { new: true }).exec();
+      if (saved) return { ...entry, adjustmentId: entry.id, userId: target.id, displayName: target.displayName, weekKey };
     }
+    throw new ConflictException('其他管理员正在调整，请使用原请求重试');
+  }
 
-    const adjustment = await this.attendanceDurationAdjustmentModel.create({
-      teamId: currentUser.teamId,
-      userId: targetUser.id,
-      username: targetUser.username,
-      weekKey,
-      operation: input.operation,
-      durationSeconds: input.durationSeconds,
-      signedDurationSeconds: deltaSeconds,
-      previousDurationSeconds,
-      resultingDurationSeconds,
-      createdBy: currentUser.userId,
-      reason: input.reason?.trim() || undefined
-    });
-
-    return this.mapDurationAdjustment(adjustment, targetUser.displayName);
+  private async newAdjustments(match: Record<string, unknown>) {
+    if (!this.adjustmentBucketModel) return [];
+    const buckets = await this.adjustmentBucketModel.find(match).lean().exec();
+    return buckets.flatMap(bucket => bucket.entries.map(entry => ({ ...entry, userId: bucket.userId,
+      teamId: bucket.teamId, weekKey: bucket.weekKey })));
   }
 
   async setTeamRecordMarked(
@@ -407,6 +421,11 @@ export class AttendanceService {
   }
 
   private async getManualAdjustmentSeconds(teamId: string, userId: string, weekKey: string) {
+    const [legacy, entries] = await Promise.all([this.getLegacyAdjustmentSeconds(teamId, userId, weekKey), this.newAdjustments({ teamId, userId, weekKey })]);
+    return legacy + entries.reduce((n, entry) => n + entry.signedDurationSeconds, 0);
+  }
+
+  private async getLegacyAdjustmentSeconds(teamId: string, userId: string, weekKey: string) {
     const rows = await this.attendanceDurationAdjustmentModel
       .aggregate<{ totalSeconds: number }>([
         { $match: { teamId, userId, weekKey } },
@@ -454,12 +473,18 @@ export class AttendanceService {
       ])
       .exec();
 
-    return new Map<string, DurationAdjustmentAggregate>(
+    const result = new Map<string, DurationAdjustmentAggregate>(
       rows.map((row) => [
         `${row._id.userId}:${row._id.weekKey}`,
         { manualAdjustmentSeconds: row.totalSeconds, adjustmentsCount: row.adjustmentsCount }
       ])
     );
+    for (const entry of await this.newAdjustments(match)) {
+      const key = `${entry.userId}:${entry.weekKey}`;
+      const current = result.get(key) ?? { manualAdjustmentSeconds: 0, adjustmentsCount: 0 };
+      result.set(key, { manualAdjustmentSeconds: current.manualAdjustmentSeconds + entry.signedDurationSeconds, adjustmentsCount: current.adjustmentsCount + 1 });
+    }
+    return result;
   }
 
   private async listWeekDurationAdjustments(
@@ -472,7 +497,8 @@ export class AttendanceService {
       .sort({ createdAt: 1 })
       .exec();
 
-    return adjustments.map((adjustment) => ({
+    const combined = [...adjustments, ...await this.newAdjustments({ teamId, userId, weekKey })];
+    return combined.sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime()).map((adjustment) => ({
       adjustmentId: adjustment.id,
       operation: adjustment.operation as AttendanceDurationAdjustmentOperation,
       durationSeconds: adjustment.durationSeconds,
@@ -493,7 +519,7 @@ export class AttendanceService {
       .exec();
     const itemsByUserId = new Map<string, DurationAdjustmentSummaryItem[]>();
 
-    for (const adjustment of adjustments) {
+    for (const adjustment of [...adjustments, ...await this.newAdjustments({ teamId, userId: { $in: userIds }, weekKey })]) {
       const items = itemsByUserId.get(adjustment.userId) ?? [];
       items.push({
         adjustmentId: adjustment.id,
@@ -522,12 +548,14 @@ export class AttendanceService {
       .find({ teamId, weekKey })
       .sort({ createdAt: -1 })
       .exec();
-    const users = await this.usersService.findByIds([...new Set(adjustments.map((item) => item.userId))]);
+    const combined = [...adjustments, ...await this.newAdjustments({ teamId, weekKey })];
+    combined.sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+    const users = await this.usersService.findByIds([...new Set(combined.flatMap((item) => [item.userId, item.createdBy]))]);
     const userById = new Map(users.map((item) => [item.id, item]));
 
     return {
       week: isoWeekKey,
-      items: adjustments.map((adjustment) => {
+      items: combined.map((adjustment) => {
         const member = userById.get(adjustment.userId);
         return {
           adjustmentId: adjustment.id,
@@ -538,44 +566,12 @@ export class AttendanceService {
           durationSeconds: adjustment.durationSeconds,
           signedDurationSeconds: adjustment.signedDurationSeconds,
           reason: adjustment.reason ?? null,
+          createdBy: adjustment.createdBy,
+          createdByDisplayName: userById.get(adjustment.createdBy)?.displayName ?? '历史管理员',
           createdAt: adjustment.createdAt?.toISOString() ?? ''
         };
       })
     };
-  }
-
-  private mapDurationAdjustment(adjustment: AttendanceDurationAdjustmentDocument, displayName: string) {
-    return {
-      adjustmentId: adjustment.id,
-      username: adjustment.username,
-      displayName,
-      weekKey: adjustment.weekKey,
-      operation: adjustment.operation as AttendanceDurationAdjustmentOperation,
-      durationSeconds: adjustment.durationSeconds,
-      previousDurationSeconds: adjustment.previousDurationSeconds,
-      resultingDurationSeconds: adjustment.resultingDurationSeconds,
-      reason: adjustment.reason,
-      createdAt: adjustment.createdAt
-    };
-  }
-
-  private async withDurationAdjustmentLock<T>(key: string, operation: () => Promise<T>) {
-    const previousLock = this.durationAdjustmentLocks.get(key) ?? Promise.resolve();
-    let releaseCurrentLock!: () => void;
-    const currentLock = new Promise<void>((resolve) => {
-      releaseCurrentLock = resolve;
-    });
-    this.durationAdjustmentLocks.set(key, currentLock);
-
-    await previousLock;
-    try {
-      return await operation();
-    } finally {
-      releaseCurrentLock();
-      if (this.durationAdjustmentLocks.get(key) === currentLock) {
-        this.durationAdjustmentLocks.delete(key);
-      }
-    }
   }
 
   private findActiveSession(userId: string) {

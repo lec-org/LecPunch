@@ -1,13 +1,16 @@
 import { formatMemberName } from '@lecpunch/shared';
 import { useEffect, useState } from 'react';
-import { Wifi, WifiOff } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Bell, Wifi, WifiOff } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Avatar } from '@lecpunch/ui';
 import { getCurrentNetworkStatus, type CurrentNetworkStatus } from '@/features/network-policy/network-policy.api';
 import { NETWORK_STATUS_ERROR_RETRY_MS, NETWORK_STATUS_REFRESH_MS } from '@/shared/constants/timing';
 import { useAuthStore } from '../store/auth-store';
 
+import { useNotifications } from '@/features/notifications/NotificationProvider';
+
 export const AppHeader = () => {
+  const { badgeCount, error: notificationError } = useNotifications();
   const user = useAuthStore((s) => s.auth.user);
   const token = useAuthStore((s) => s.auth.token);
   const navigate = useNavigate();
@@ -103,6 +106,12 @@ export const AppHeader = () => {
           <span className="font-medium">{statusLabel}</span>
         </div>
       </div>
+      <div className="flex items-center gap-5">
+        <Link to="/notifications" className="relative rounded-lg p-2 text-gray-600 hover:bg-gray-100" aria-label={`通知，${badgeCount} 条未读`} title={notificationError || '通知中心'}>
+          <Bell className="h-5 w-5" />
+          {badgeCount > 0 && <span aria-hidden="true" className="absolute -right-2 -top-1 min-w-5 rounded-full bg-red-600 px-1 text-center text-xs leading-5 text-white">{badgeCount > 99 ? '99+' : badgeCount}</span>}
+          {notificationError && <span className="sr-only">{notificationError}</span>}
+        </Link>
       <div
         className="flex items-center space-x-3 cursor-pointer"
         onClick={() => navigate('/profile')}
@@ -118,7 +127,7 @@ export const AppHeader = () => {
         <span className="text-sm font-medium text-gray-700 hidden md:block">
           {user ? formatMemberName(user) : '用户'}
         </span>
-      </div>
+      </div></div>
     </header>
   );
 };

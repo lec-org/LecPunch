@@ -7,7 +7,7 @@ export const logtoResource = import.meta.env.VITE_LOGTO_RESOURCE || 'https://api
 export const logtoOrganizationId = import.meta.env.VITE_LOGTO_ORGANIZATION_ID || 'lec-studio';
 export const logtoCallbackUri = `${window.location.origin}/callback`;
 
-let accessTokenProvider: (() => Promise<string | undefined>) | null = null;
+let accessTokenProvider: ((forceRefresh?: boolean) => Promise<string | undefined>) | null = null;
 let logoutProvider: (() => Promise<void>) | null = null;
 
 export const setAccessTokenProvider = (provider: typeof accessTokenProvider) => {
@@ -19,6 +19,7 @@ export const setLogoutProvider = (provider: typeof logoutProvider) => {
 };
 
 export const getAccessToken = async () => accessTokenProvider?.();
+export const refreshAccessToken = async () => accessTokenProvider?.(true);
 export const signOut = async () => logoutProvider?.();
 
 export const fetchCurrentUser = async (): Promise<User> => {
