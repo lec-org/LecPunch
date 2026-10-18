@@ -79,7 +79,8 @@ describe('AdminMembersPage', () => {
 
     expect(await screen.findByText('Alice')).toBeInTheDocument();
     expect(screen.getByText('本人')).toBeInTheDocument();
-    expect(screen.getByText('普通成员')).toBeInTheDocument();
+    expect(screen.getByText('由 SSO 管理')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '设为管理员' })).not.toBeInTheDocument();
   });
 
   it('prevents self role and status changes', async () => {
@@ -104,12 +105,12 @@ describe('AdminMembersPage', () => {
     );
 
     expect(await screen.findByText('Admin')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '降为成员' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '降为成员' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '停用' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '销毁账号' })).toBeDisabled();
   });
 
-  it('updates a member role from the action buttons', async () => {
+  it('changes only the local enabled state, not SSO roles', async () => {
     mocks.getAdminMembers.mockResolvedValue([
       {
         id: 'member-1',
@@ -128,8 +129,8 @@ describe('AdminMembersPage', () => {
       teamId: 'team-1',
       username: 'alice',
       displayName: 'Alice',
-      role: 'admin',
-      status: 'active',
+      role: 'member',
+      status: 'disabled',
       enrollYear: 2025,
       createdAt: '2026-04-11T00:00:00.000Z',
       updatedAt: '2026-04-11T00:00:00.000Z'
@@ -142,12 +143,12 @@ describe('AdminMembersPage', () => {
       </MemoryRouter>
     );
 
-    await user.click(await screen.findByRole('button', { name: '设为管理员' }));
+    await user.click(await screen.findByRole('button', { name: '停用' }));
 
     await waitFor(() => {
-      expect(mocks.updateAdminMember).toHaveBeenCalledWith('member-1', { role: 'admin' });
+      expect(mocks.updateAdminMember).toHaveBeenCalledWith('member-1', { status: 'disabled' });
     });
-    expect(screen.getByText('管理员')).toBeInTheDocument();
+    expect(screen.getByText('已停用')).toBeInTheDocument();
   });
 
   it('requires a typed confirmation before destroying an account', async () => {

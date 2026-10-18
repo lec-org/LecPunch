@@ -79,12 +79,9 @@ export class UsersService {
       .exec();
   }
 
-  async findActiveAdminIds(teamId: string) {
-    const admins = await this.userModel
-      .find({ teamId, role: 'admin', status: 'active' })
-      .select({ _id: 1 })
-      .exec();
-    return admins.map((admin) => admin.id);
+  async setAdminMessageBadge(userId: string, enabled: boolean) {
+    await this.userModel.updateOne({ _id: userId }, { $set: { adminMessageBadgeEnabled: enabled } }).exec();
+    return { adminMessageBadgeEnabled: enabled };
   }
 
   getMemberKey(userId: string) {
@@ -187,6 +184,9 @@ export class UsersService {
     memberId: string,
     input: AdminUpdateMemberInput
   ): Promise<UserDocument> {
+    if ('role' in input && input.role !== undefined) {
+      throw new BadRequestException({ code: 'SSO_MANAGED_ROLE', message: '管理员权限由 SSO 管理，请在 SSO 平台修改' });
+    }
     const member = await this.userModel.findById(memberId).exec();
     if (!member) {
       throw new NotFoundException('User not found');
@@ -211,9 +211,6 @@ export class UsersService {
     }
 
     const set: Record<string, unknown> = {};
-    if (input.role !== undefined) {
-      set.role = input.role;
-    }
     if (input.status !== undefined) {
       set.status = input.status;
     }

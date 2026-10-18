@@ -1,3 +1,4 @@
+import { getApiErrorMessage } from '@/shared/lib/api-error';
 import { useEffect } from 'react';
 import { useLogto } from '@logto/react';
 import { useAuthStore } from '@/app/store/auth-store';
@@ -10,18 +11,23 @@ import {
 } from '@/shared/auth/logto';
 
 export const LogtoSession = ({ children }: { children: React.ReactNode }) => {
-  const { isAuthenticated, isLoading, getAccessToken, signOut } = useLogto();
+  const { isAuthenticated, isLoading, getAccessToken, clearAccessToken, signOut } = useLogto();
   const setAuth = useAuthStore((state) => state.setAuth);
+  const retrySession = useAuthStore(state => state.retrySession);
+  const setSessionError = useAuthStore(state => state.setSessionError);
   const setAuthInitializing = useAuthStore((state) => state.setAuthInitializing);
 
   useEffect(() => {
-    setAccessTokenProvider(() => getAccessToken(logtoResource, logtoOrganizationId));
+    setAccessTokenProvider(async (forceRefresh = false) => {
+      if (forceRefresh) await clearAccessToken();
+      return getAccessToken(logtoResource, logtoOrganizationId);
+    });
     setLogoutProvider(() => signOut(window.location.origin));
     return () => {
       setAccessTokenProvider(null);
       setLogoutProvider(null);
     };
-  }, [getAccessToken, signOut]);
+  }, [getAccessToken, clearAccessToken, signOut]);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -35,12 +41,16 @@ export const LogtoSession = ({ children }: { children: React.ReactNode }) => {
 
     let cancelled = false;
     setAuthInitializing(true);
+    setSessionError(null);
     void (async () => {
       try {
         const token = await getAccessToken(logtoResource, logtoOrganizationId);
-        if (!token || cancelled) return;
+        if (cancelled) return;
+        if (!token) throw new Error('SSO 未返回打卡访问凭据，请重新登录');
         const user = await fetchCurrentUser();
         if (!cancelled) setAuth({ token, user });
+      } catch (error) {
+        if (!cancelled) setSessionError(getApiErrorMessage(error, '登录资料恢复失败，请重试或联系管理员'));
       } finally {
         if (!cancelled) setAuthInitializing(false);
       }
@@ -49,7 +59,7 @@ export const LogtoSession = ({ children }: { children: React.ReactNode }) => {
     return () => {
       cancelled = true;
     };
-  }, [getAccessToken, isAuthenticated, setAuth, setAuthInitializing]);
+  }, [getAccessToken, isAuthenticated, setAuth, setAuthInitializing, retrySession, setSessionError]);
 
   return children;
 };

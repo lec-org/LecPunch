@@ -6,16 +6,18 @@ import { NETWORK_STATUS_ERROR_RETRY_MS, NETWORK_STATUS_REFRESH_MS } from '@/shar
 import { AppHeader } from './AppHeader';
 
 const mocks = vi.hoisted(() => ({
-  getCurrentNetworkStatus: vi.fn()
+  getCurrentNetworkStatus: vi.fn(), notificationError: ''
 }));
 
 vi.mock('@/features/network-policy/network-policy.api', () => ({
   getCurrentNetworkStatus: mocks.getCurrentNetworkStatus
 }));
+vi.mock('@/features/notifications/NotificationProvider', () => ({ useNotifications: () => ({ badgeCount: 3, error: mocks.notificationError }) }));
 
 describe('AppHeader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.notificationError = '';
     useAuthStore.setState({
       auth: {
         token: 'token',
@@ -90,5 +92,11 @@ describe('AppHeader', () => {
 
     await vi.advanceTimersByTimeAsync(NETWORK_STATUS_ERROR_RETRY_MS - NETWORK_STATUS_REFRESH_MS);
     expect(mocks.getCurrentNetworkStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('includes notification errors and unread count in the accessible link name', () => {
+    mocks.notificationError = '通知同步失败';
+    render(<MemoryRouter><AppHeader /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: '通知，3 条未读，通知同步失败' })).toBeInTheDocument();
   });
 });

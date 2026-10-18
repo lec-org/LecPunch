@@ -5,6 +5,7 @@ import {
   AttendanceDurationAdjustment,
   AttendanceDurationAdjustmentSchema
 } from './schemas/attendance-duration-adjustment.schema';
+import { AttendanceAdjustmentBucket, AttendanceAdjustmentBucketSchema } from './schemas/attendance-adjustment-bucket.schema';
 import { AttendanceService } from './attendance.service';
 import { AttendanceController } from './attendance.controller';
 import { NetworkPolicyModule } from '../network-policy/network-policy.module';
@@ -18,6 +19,7 @@ import { PointsModule } from '../points/points.module';
     PointsModule,
     MongooseModule.forFeature([
       { name: AttendanceSession.name, schema: AttendanceSessionSchema },
+      { name: AttendanceAdjustmentBucket.name, schema: AttendanceAdjustmentBucketSchema },
       { name: AttendanceDurationAdjustment.name, schema: AttendanceDurationAdjustmentSchema }
     ])
   ],

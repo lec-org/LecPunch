@@ -4,6 +4,8 @@ import {
   ForbiddenException,
   Get,
   Param,
+  Patch,
+  BadRequestException,
   Post,
   Query,
   Res,
@@ -17,6 +19,8 @@ import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../auth/types/auth-user.type';
+import { isValidObjectId } from 'mongoose';
+import { ProcessReportDto } from './dto/process-report.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { ListReportsQueryDto } from './dto/list-reports-query.dto';
 import { ReportsService, type UploadedReportImage } from './reports.service';
@@ -57,6 +61,13 @@ export class ReportsController {
     return this.reportsService.listTeamReports(user.teamId, query.page, query.pageSize);
   }
 
+  @Patch('admin/:reportId')
+  processReport(@CurrentUser() user: AuthUser, @Param('reportId') id: string, @Body() input: ProcessReportDto) {
+    this.assertAdmin(user);
+    if (!isValidObjectId(id)) throw new BadRequestException('Invalid report id');
+    return this.reportsService.processReport(user, id, input);
+  }
+
   @Get('admin/:reportId/images/:imageId')
   async getReportImage(
     @CurrentUser() user: AuthUser,
@@ -65,6 +76,7 @@ export class ReportsController {
     @Res() response: Response
   ) {
     this.assertAdmin(user);
+    if (!isValidObjectId(reportId)) throw new BadRequestException('Invalid report id');
     const image = await this.reportsService.getImageForAdmin(user.teamId, reportId, imageId);
     response.setHeader('Content-Type', image.contentType);
     response.setHeader('Content-Length', String(image.sizeBytes));

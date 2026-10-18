@@ -19,12 +19,21 @@ describe('AttendanceService', () => {
   const usersService = {
     findByIds: vi.fn(),
     findByUsername: vi.fn(),
+    findById: vi.fn(),
     getMemberKey: vi.fn((id: string) => `member-key-${id}`)
   };
   const pointsService = { syncAttendancePoints: vi.fn().mockResolvedValue(0) };
   const attendanceModel = { create, findOne, find, findOneAndUpdate, aggregate } as any;
   const adjustmentModel = { create: adjustmentCreate, aggregate: adjustmentAggregate, find: adjustmentFind } as any;
   let service: AttendanceService;
+  let bucket: { version: number; entries: any[] };
+  const bucketUpdate = vi.fn();
+  const bucketModel = {
+    updateOne: vi.fn(() => ({ exec: vi.fn().mockResolvedValue({}) })),
+    find: vi.fn(() => ({ lean: () => ({ exec: vi.fn().mockResolvedValue([]) }) })),
+    findOne: vi.fn(() => ({ exec: vi.fn().mockImplementation(async () => structuredClone(bucket)) })),
+    findOneAndUpdate: bucketUpdate
+  };
 
   const activeSession = (overrides: Record<string, unknown> = {}) => ({
     id: 'session-1', teamId: 'team-1', userId: 'user-1', checkInAt: new Date('2026-04-10T00:00:00.000Z'),
@@ -34,6 +43,10 @@ describe('AttendanceService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    bucket = { version: 0, entries: [] };
+    bucketUpdate.mockImplementation((_query, update) => ({ exec: async () => {
+      bucket.entries.push(update.$push.entries); bucket.version++; return bucket;
+    } }));
     networkPolicyService.assertIpAllowed.mockResolvedValue(undefined);
     adjustmentFind.mockReturnValue({ sort: vi.fn().mockReturnValue({ exec: vi.fn().mockResolvedValue([]) }) });
     service = new AttendanceService(
@@ -41,7 +54,7 @@ describe('AttendanceService', () => {
       adjustmentModel,
       networkPolicyService as any,
       usersService as any,
-      pointsService as any
+      pointsService as any, bucketModel as any
     );
   });
 
@@ -228,7 +241,7 @@ describe('AttendanceService', () => {
       id: 'member-1',
       teamId: 'team-1',
       username: 'alice',
-      displayName: 'Alice'
+      displayName: 'Alice', status: 'active'
     });
     aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 4_200 }]) });
     adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
@@ -249,21 +262,17 @@ describe('AttendanceService', () => {
         { username: 'Alice', operation: 'add', durationSeconds: 300, reason: '补录' }
       )
     ).resolves.toMatchObject({
-      adjustmentId: 'adjustment-1',
+      adjustmentId: expect.any(String),
       previousDurationSeconds: 4_200,
       resultingDurationSeconds: 4_500
     });
 
-    expect(adjustmentCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamId: 'team-1',
-        userId: 'member-1',
-        weekKey: '2026-08-31',
-        operation: 'add',
-        durationSeconds: 300,
-        createdBy: 'admin-1'
-      })
+    expect(bucketUpdate).toHaveBeenCalledWith(
+      { teamId: 'team-1', userId: 'member-1', weekKey: '2026-08-31', version: 0 },
+      { $inc: { version: 1 }, $push: { entries: expect.objectContaining({ operation: 'add', durationSeconds: 300, createdBy: 'admin-1' }) } },
+      { new: true }
     );
+    expect(adjustmentCreate).not.toHaveBeenCalled();
     expect(pointsService.syncAttendancePoints).not.toHaveBeenCalled();
   });
 
@@ -272,7 +281,7 @@ describe('AttendanceService', () => {
       id: 'member-1',
       teamId: 'team-1',
       username: 'alice',
-      displayName: 'Alice'
+      displayName: 'Alice', status: 'active'
     });
     aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 120 }]) });
     adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: -30 }]) });
@@ -303,5 +312,54 @@ describe('AttendanceService', () => {
     ).rejects.toMatchObject({ response: { code: ERROR_CODES.ATTENDANCE_CROSS_TEAM_FORBIDDEN } });
 
     expect(adjustmentCreate).not.toHaveBeenCalled();
+  });
+
+  it('exposes the signed balance for administrator correction previews', async () => {
+    usersService.findById.mockResolvedValue({ id: 'member-1', teamId: user.teamId, status: 'active' });
+    aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 0 }]) });
+    adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: -600 }]) });
+    expect(await service.adjustmentContext(user, 'member-1')).toMatchObject({ totalDurationSeconds: -600, manualAdjustmentSeconds: -600 });
+  });
+
+  it('keeps balance and audit week identifiers consistent when a read crosses Shanghai Monday', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-18T15:59:59.999Z'));
+    usersService.findById.mockResolvedValue({ id: 'member-1', teamId: user.teamId, status: 'active' });
+    aggregate.mockReturnValue({ exec: vi.fn().mockImplementation(async () => {
+      vi.setSystemTime(new Date('2026-10-18T16:00:00.001Z'));
+      return [{ totalSeconds: 600 }];
+    }) });
+    adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
+    try {
+      await expect(service.adjustmentContext(user, 'member-1')).resolves.toMatchObject({
+        weekKey: '2026-10-12', isoWeek: '2026-W42', totalDurationSeconds: 600
+      });
+      expect(aggregate).toHaveBeenCalledWith(expect.arrayContaining([
+        { $match: { teamId: user.teamId, userId: 'member-1', weekKey: '2026-10-12', status: { $ne: 'active' } } }
+      ]));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([
+    { operation: 'add' as const, seconds: 600, accepted: true, after: 0 },
+    { operation: 'add' as const, seconds: 660, accepted: true, after: 60 },
+    { operation: 'add' as const, seconds: 599, accepted: false, after: -1 },
+    { operation: 'subtract' as const, seconds: 60, accepted: false, after: -660 }
+  ])('handles negative-balance correction: $operation $seconds', async ({ operation, seconds, accepted, after }) => {
+    usersService.findByUsername.mockResolvedValue({ id: 'member-1', teamId: user.teamId, username: 'alice', status: 'active' });
+    aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: 0 }]) });
+    adjustmentAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalSeconds: -600 }]) });
+    const input = { username: 'alice', operation, durationSeconds: seconds, requestKey: 'repair-key-1', reason: '核对原始记录后补正' };
+    if (accepted) {
+      const result = await service.adjustCurrentWeekDuration({ ...user, role: 'admin' }, input);
+      expect(result).toMatchObject({ previousDurationSeconds: -600, resultingDurationSeconds: after });
+      expect(bucket.entries).toHaveLength(1);
+      expect(await service.adjustCurrentWeekDuration({ ...user, role: 'admin' }, input)).toMatchObject({ adjustmentId: result.adjustmentId });
+      expect(bucket.entries).toHaveLength(1);
+    } else {
+      await expect(service.adjustCurrentWeekDuration({ ...user, role: 'admin' }, input)).rejects.toMatchObject({ status: operation === 'subtract' ? 409 : 400 });
+      expect(bucketUpdate).not.toHaveBeenCalled();
+    }
+    expect(pointsService.syncAttendancePoints).not.toHaveBeenCalled();
   });
 });

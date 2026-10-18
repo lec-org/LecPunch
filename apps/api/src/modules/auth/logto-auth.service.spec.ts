@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { LogtoAuthService } from './logto-auth.service';
 
@@ -68,8 +68,8 @@ describe('LogtoAuthService', () => {
   it('拒绝不属于 LEC Studio 或缺少访问 scope 的 token', async () => {
     const { service } = buildService();
 
-    await expect(service.resolveUser({ ...memberClaims, organization_id: 'other' })).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(service.resolveUser({ ...memberClaims, scope: 'openid' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.resolveUser({ ...memberClaims, organization_id: 'other' })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.resolveUser({ ...memberClaims, scope: 'openid' })).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('旧用户仅在学号和 Handle 同时匹配时绑定 Logto sub', async () => {

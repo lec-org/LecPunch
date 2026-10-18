@@ -23,6 +23,12 @@ import { AdminEventsPage } from '@/pages/admin-events/AdminEventsPage';
 import { AdminLedgerPage } from '@/pages/admin-ledger/AdminLedgerPage';
 import { AdminDashboardPage } from '@/pages/admin-dashboard/AdminDashboardPage';
 
+import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
+import { SubmitMessagePage } from '@/pages/messages/SubmitMessagePage';
+import { AdminMessagesPage } from '@/pages/admin-messages/AdminMessagesPage';
+import { AdminNoticesPage } from '@/pages/admin-notices/AdminNoticesPage';
+import { AdminDurationPage } from '@/pages/admin-duration/AdminDurationPage';
+
 // Root wrapper inside the router context — safe to use useNavigate here
 const Root = () => (
   <AppProviders>
@@ -61,6 +67,8 @@ const router = createBrowserRouter([
             element: <MainLayout />,
             children: [
               { index: true, element: <DashboardPage /> },
+              { path: 'notifications', element: <NotificationsPage /> },
+              { path: 'messages/new', element: <SubmitMessagePage /> },
               { path: 'records', element: <RecordsPage /> },
               { path: 'members', element: <MembersPage /> },
               { path: 'members/:memberKey/records', element: <MemberRecordsPage /> },
@@ -72,6 +80,9 @@ const router = createBrowserRouter([
                 element: <AdminRoute />,
                 children: [
                   { index: true, element: <AdminDashboardPage /> },
+                  { path: 'duration-adjustments', element: <AdminDurationPage /> },
+                  { path: 'messages', element: <AdminMessagesPage /> },
+                  { path: 'notices', element: <AdminNoticesPage /> },
                   { path: 'members', element: <AdminMembersPage /> },
                   { path: 'events', element: <AdminEventsPage /> },
                   { path: 'ledger', element: <AdminLedgerPage /> },

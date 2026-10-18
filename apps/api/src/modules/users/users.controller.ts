@@ -17,7 +17,7 @@ export class UsersController {
   async listTeamMembers(@CurrentUser() user: AuthUser) {
     this.assertAdmin(user);
     const members = await this.usersService.listTeamMembers(user.teamId);
-    return { items: members.map((member) => toUserResponse(member)) };
+    return { items: members.map((member) => ({ ...toUserResponse(member, member.id === user.userId ? user.role : 'member'), roleVerified: member.id === user.userId })) };
   }
 
   @Patch('admin/members/:userId')
@@ -28,7 +28,7 @@ export class UsersController {
   ) {
     this.assertAdmin(user);
     const member = await this.usersService.adminUpdateMember(user, userId, dto);
-    return toUserResponse(member);
+    return { ...toUserResponse(member, member.id === user.userId ? user.role : 'member'), roleVerified: member.id === user.userId };
   }
 
   @Delete('admin/members/:userId')

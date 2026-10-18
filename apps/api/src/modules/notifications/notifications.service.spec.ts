@@ -1,279 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NotFoundException } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-
-describe('NotificationsService', () => {
-  const create = vi.fn();
-  const find = vi.fn();
-  const findOne = vi.fn();
-  const notificationModel = {
-    create,
-    find,
-    findOne
-  } as any;
-
+const user = { userId: 'user-1', teamId: 'team-1', role: 'member', tokenExpiresAt: Date.now() / 1000 + 300 } as any;
+describe('NotificationsService delivery boundary', () => {
+  const create = vi.fn(), findOneAndUpdate = vi.fn();
   let service: NotificationsService;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new NotificationsService(notificationModel);
+    create.mockImplementation(async (input: any) => ({ ...input, id: 'notice-1', createdAt: new Date() }));
+    findOneAndUpdate.mockReturnValue({ exec: vi.fn().mockResolvedValue({ id: 'report-notice', teamId: 'team-1', type: 'report.submitted', createdAt: new Date() }) });
+    service = new NotificationsService({ create, findOneAndUpdate } as any, {} as any, {} as any);
   });
-
-  it('creates attendance-record-marked notifications with the expected payload shape', async () => {
-    create.mockResolvedValue({
-      id: 'notification-1',
-      teamId: 'team-1',
-      userId: 'user-1',
-      type: 'attendance.record_marked',
-      title: '打卡记录已被标记',
-      message: '管理员标记了一条你的打卡记录，请进入记录页查看详情。',
-      payload: {
-        recordId: 'session-1',
-        memberKey: 'member-key-user-1',
-        weekKey: '2026-04-06'
-      },
-      sourceType: 'attendance_record',
-      sourceId: 'session-1',
-      createdBy: 'admin-1',
-      createdAt: new Date('2026-04-16T00:00:00.000Z'),
-      acknowledgedAt: null
-    });
-
-    const result = await service.createForAttendanceRecordMarked({
-      teamId: 'team-1',
-      userId: 'user-1',
-      sourceId: 'session-1',
-      memberKey: 'member-key-user-1',
-      weekKey: '2026-04-06',
-      createdBy: 'admin-1'
-    });
-
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamId: 'team-1',
-        userId: 'user-1',
-        type: 'attendance.record_marked',
-        sourceType: 'attendance_record',
-        sourceId: 'session-1',
-        acknowledgedAt: null
-      })
-    );
-    expect(result).toEqual(
-      expect.objectContaining({
-        id: 'notification-1',
-        payload: {
-          recordId: 'session-1',
-          memberKey: 'member-key-user-1',
-          weekKey: '2026-04-06'
-        }
-      })
-    );
+  it('retains the attendance payload while streams contain only an invalidation hint', async () => {
+    const send = vi.fn(); service.subscribe(user, send);
+    const result = await service.createForAttendanceRecordMarked({ teamId: user.teamId, userId: user.userId, sourceId: 'record-1', memberKey: 'key', weekKey: '2026-10-12', createdBy: 'admin-1' });
+    expect(result.payload).toEqual({ recordId: 'record-1', memberKey: 'key', weekKey: '2026-10-12' });
+    expect(send).toHaveBeenCalledWith({ event: 'notifications.changed', data: {} });
+    expect(JSON.stringify(send.mock.calls)).not.toContain('record-1');
   });
-
-  it('creates and streams a report notification to every active admin', async () => {
-    const subscriber = vi.fn();
-    const unsubscribe = service.subscribe('admin-1', subscriber);
-    create.mockImplementation(async (input: any) => ({
-      ...input,
-      id: `notification-${input.userId}`,
-      createdAt: input.createdAt ?? new Date('2026-04-16T00:00:00.000Z')
-    }));
-
-    const result = await service.createForReportSubmitted({
-      teamId: 'team-1',
-      adminUserIds: ['admin-1', 'admin-2'],
-      reportId: 'report-1',
-      reporterUserId: 'member-1',
-      reporterDisplayName: '成员甲',
-      imageCount: 2,
-      imagesExpireAt: new Date('2026-04-16T03:00:00.000Z')
-    });
-
-    expect(result).toHaveLength(2);
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: 'admin-1',
-        type: 'report.submitted',
-        sourceType: 'report',
-        sourceId: 'report-1',
-        payload: expect.objectContaining({ imageCount: 2 })
-      })
-    );
-    expect(subscriber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'notification.created',
-        data: expect.objectContaining({ type: 'report.submitted' })
-      })
-    );
-    unsubscribe();
-  });
-
-  it('lists unacknowledged notifications by default', async () => {
-    const exec = vi.fn().mockResolvedValue([
-      {
-        id: 'notification-1',
-        teamId: 'team-1',
-        userId: 'user-1',
-        type: 'attendance.record_marked',
-        title: 'title',
-        message: 'message',
-        payload: { recordId: 'session-1', memberKey: 'member-key-user-1', weekKey: '2026-04-06' },
-        sourceType: 'attendance_record',
-        sourceId: 'session-1',
-        createdBy: 'admin-1',
-        createdAt: new Date('2026-04-16T00:00:00.000Z'),
-        acknowledgedAt: null
-      }
-    ]);
-    const limit = vi.fn().mockReturnValue({ exec });
-    const sort = vi.fn().mockReturnValue({ limit });
-    find.mockReturnValue({ sort });
-
-    const result = await service.listForUser('team-1', 'user-1');
-
-    expect(find).toHaveBeenCalledWith({ teamId: 'team-1', userId: 'user-1', acknowledgedAt: null });
-    expect(sort).toHaveBeenCalledWith({ createdAt: -1 });
-    expect(limit).toHaveBeenCalledWith(20);
-    expect(result).toHaveLength(1);
-  });
-
-  it('acknowledges notifications idempotently for the owning user', async () => {
-    const save = vi.fn().mockResolvedValue(undefined);
-    findOne.mockReturnValueOnce({
-      exec: vi.fn().mockResolvedValue({
-        id: 'notification-1',
-        teamId: 'team-1',
-        userId: 'user-1',
-        type: 'attendance.record_marked',
-        title: 'title',
-        message: 'message',
-        payload: { recordId: 'session-1', memberKey: 'member-key-user-1', weekKey: '2026-04-06' },
-        sourceType: 'attendance_record',
-        sourceId: 'session-1',
-        createdBy: 'admin-1',
-        createdAt: new Date('2026-04-16T00:00:00.000Z'),
-        acknowledgedAt: null,
-        save
-      })
-    });
-
-    const result = await service.acknowledge('team-1', 'user-1', 'notification-1');
-
-    expect(findOne).toHaveBeenCalledWith({ _id: 'notification-1', teamId: 'team-1', userId: 'user-1' });
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(result.acknowledgedAt).not.toBeNull();
-  });
-
-  it('keeps repeated acknowledgements idempotent', async () => {
-    const save = vi.fn().mockResolvedValue(undefined);
-    findOne.mockReturnValueOnce({
-      exec: vi.fn().mockResolvedValue({
-        id: 'notification-1',
-        teamId: 'team-1',
-        userId: 'user-1',
-        type: 'attendance.record_marked',
-        title: 'title',
-        message: 'message',
-        payload: { recordId: 'session-1', memberKey: 'member-key-user-1', weekKey: '2026-04-06' },
-        sourceType: 'attendance_record',
-        sourceId: 'session-1',
-        createdBy: 'admin-1',
-        createdAt: new Date('2026-04-16T00:00:00.000Z'),
-        acknowledgedAt: new Date('2026-04-16T01:00:00.000Z'),
-        save
-      })
-    });
-
-    const result = await service.acknowledge('team-1', 'user-1', 'notification-1');
-
-    expect(save).not.toHaveBeenCalled();
-    expect(result.acknowledgedAt).toBe('2026-04-16T01:00:00.000Z');
-  });
-
-  it('rejects acknowledgement for notifications outside the current user scope', async () => {
-    findOne.mockReturnValueOnce({
-      exec: vi.fn().mockResolvedValue(null)
-    });
-
-    await expect(service.acknowledge('team-1', 'user-1', 'notification-1')).rejects.toBeInstanceOf(NotFoundException);
-  });
-
-  it('pushes new notifications to active subscribers for the same user', async () => {
-    const subscriber = vi.fn();
-    const unsubscribe = service.subscribe('user-1', subscriber);
-    create.mockResolvedValue({
-      id: 'notification-1',
-      teamId: 'team-1',
-      userId: 'user-1',
-      type: 'attendance.record_marked',
-      title: '打卡记录已被标记',
-      message: '管理员标记了一条你的打卡记录，请进入记录页查看详情。',
-      payload: {
-        recordId: 'session-1',
-        memberKey: 'member-key-user-1',
-        weekKey: '2026-04-06'
-      },
-      sourceType: 'attendance_record',
-      sourceId: 'session-1',
-      createdBy: 'admin-1',
-      createdAt: new Date('2026-04-16T00:00:00.000Z'),
-      acknowledgedAt: null
-    });
-
-    await service.createForAttendanceRecordMarked({
-      teamId: 'team-1',
-      userId: 'user-1',
-      sourceId: 'session-1',
-      memberKey: 'member-key-user-1',
-      weekKey: '2026-04-06',
-      createdBy: 'admin-1'
-    });
-
-    expect(subscriber).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'notification.created',
-        data: expect.objectContaining({
-          id: 'notification-1'
-        })
-      })
-    );
-
-    unsubscribe();
-  });
-
-  it('stops pushing events after a subscriber disconnects', async () => {
-    const subscriber = vi.fn();
-    const unsubscribe = service.subscribe('user-1', subscriber);
-    unsubscribe();
-    create.mockResolvedValue({
-      id: 'notification-1',
-      teamId: 'team-1',
-      userId: 'user-1',
-      type: 'attendance.record_marked',
-      title: '打卡记录已被标记',
-      message: '管理员标记了一条你的打卡记录，请进入记录页查看详情。',
-      payload: {
-        recordId: 'session-1',
-        memberKey: 'member-key-user-1',
-        weekKey: '2026-04-06'
-      },
-      sourceType: 'attendance_record',
-      sourceId: 'session-1',
-      createdBy: 'admin-1',
-      createdAt: new Date('2026-04-16T00:00:00.000Z'),
-      acknowledgedAt: null
-    });
-
-    await service.createForAttendanceRecordMarked({
-      teamId: 'team-1',
-      userId: 'user-1',
-      sourceId: 'session-1',
-      memberKey: 'member-key-user-1',
-      weekKey: '2026-04-06',
-      createdBy: 'admin-1'
-    });
-
-    expect(subscriber).not.toHaveBeenCalled();
+  it('does not send admin hints to members, other teams, expired sessions or disconnected subscribers', async () => {
+    const allowed = vi.fn(), member = vi.fn(), expired = vi.fn(), other = vi.fn(), disconnected = vi.fn();
+    service.subscribe({ ...user, role: 'admin' }, allowed);
+    service.subscribe(user, member);
+    service.subscribe({ ...user, role: 'admin', tokenExpiresAt: 1 }, expired);
+    service.subscribe({ ...user, role: 'admin', teamId: 'team-2' }, other);
+    service.subscribe({ ...user, role: 'admin' }, disconnected)();
+    await service.createForReportSubmitted({ teamId: user.teamId, reportId: 'r', reporterUserId: user.userId, reporterDisplayName: 'Reporter', imageCount: 0, imagesExpireAt: null });
+    expect(allowed).toHaveBeenCalledOnce();
+    for (const denied of [member, expired, other, disconnected]) expect(denied).not.toHaveBeenCalled();
+    expect(findOneAndUpdate).toHaveBeenCalledWith({ deliveryKey: 'report:team-1:r' }, expect.objectContaining({ $setOnInsert: expect.objectContaining({ audience: 'team_admin' }) }), expect.anything());
   });
 });

@@ -1,12 +1,14 @@
 import { createUserFixture } from '@/test/user-fixture';
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/app/store/auth-store';
 import { CallbackPage } from './CallbackPage';
 
+const sdk = vi.hoisted(() => ({ error: undefined as Error | undefined }));
 vi.mock('@logto/react', () => ({
-  useHandleSignInCallback: () => ({ isLoading: false, isAuthenticated: true, error: undefined })
+  useHandleSignInCallback: () => ({ isLoading: false, isAuthenticated: true, error: sdk.error })
 }));
 
 const Location = () => <span data-testid="location">{useLocation().pathname}</span>;
@@ -25,7 +27,8 @@ const renderCallback = () =>
 
 describe('CallbackPage', () => {
   beforeEach(() => {
-    useAuthStore.setState({ auth: { token: null, user: null }, authInitializing: true });
+    sdk.error = undefined;
+    useAuthStore.setState({ auth: { token: null, user: null }, authInitializing: true, sessionError: null });
   });
   afterEach(cleanup);
 
@@ -52,5 +55,22 @@ describe('CallbackPage', () => {
 
     expect(screen.getByTestId('location')).toHaveTextContent('/');
     expect(screen.getByText('首页')).toBeInTheDocument();
+  });
+
+  it('only offers re-login for callback errors, even if a business recovery error also exists', async () => {
+    sdk.error = new Error('callback failed');
+    useAuthStore.setState({ sessionError: 'profile failed' });
+    renderCallback();
+    expect(screen.queryByRole('button', { name: '重试恢复登录' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '重新登录' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/login');
+  });
+
+  it('offers recovery when only restoring the business profile failed', async () => {
+    useAuthStore.setState({ sessionError: 'profile failed' });
+    const previous = useAuthStore.getState().retrySession;
+    renderCallback();
+    await userEvent.click(screen.getByRole('button', { name: '重试恢复登录' }));
+    expect(useAuthStore.getState().retrySession).toBe(previous + 1);
   });
 });

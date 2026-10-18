@@ -7,4 +7,5 @@ export interface AuthUser {
   username: string;
   displayName: string;
   enrollYear: number;
+  tokenExpiresAt?: number;
 }

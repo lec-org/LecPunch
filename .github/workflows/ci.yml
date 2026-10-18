@@ -52,7 +52,7 @@ jobs:
   build-images:
     name: Build ${{ matrix.service }} image
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'lec-org/LecPunch' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -94,7 +94,7 @@ jobs:
   deploy:
     name: Deploy production
     needs: [verify, build-images]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'lec-org/LecPunch' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 20

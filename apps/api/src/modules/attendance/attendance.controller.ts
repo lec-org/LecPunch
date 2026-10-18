@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Post, Query, UseGuards, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Post, Query, UseGuards, Req } from '@nestjs/common';
 import { AttendanceService } from './attendance.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -54,6 +54,13 @@ export class AttendanceController {
   async keepAlive(@CurrentUser() user: AuthUser) {
     const session = await this.attendanceService.keepAlive(user);
     return this.mapSession(session);
+  }
+
+  @Get('admin/current-week-adjustment-context')
+  adjustmentContext(@CurrentUser() user: AuthUser, @Query('userId') userId: string) {
+    this.assertAdmin(user);
+    if (!/^[a-fA-F0-9]{24}$/.test(userId ?? '')) throw new BadRequestException('Invalid member id');
+    return this.attendanceService.adjustmentContext(user, userId);
   }
 
   @Post('admin/current-week-duration-adjustments')

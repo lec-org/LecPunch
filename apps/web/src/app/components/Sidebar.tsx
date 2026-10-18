@@ -5,6 +5,8 @@ import { useAuthStore } from '../store/auth-store';
 import { signOut } from '@/shared/auth/logto';
 
 const navItems = [
+  { label: '通知中心', to: '/notifications', icon: Clock },
+  { label: '联系管理员', to: '/messages/new', icon: UserCheck },
   { label: '工作台', to: '/', icon: LayoutDashboard },
   { label: '团队活动', to: '/events', icon: CalendarClock },
   { label: '团队成员', to: '/members', icon: Users },
@@ -51,6 +53,9 @@ export const Sidebar = () => {
 
         {user?.role === 'admin' ? (
           <>
+            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/duration-adjustments">增减时长</NavLink>
+            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/messages">成员消息收件箱</NavLink>
+            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/notices">发布通知与已读状态</NavLink>
             <div className="mt-6 mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">管理</div>
             <NavLink
               to="/admin"
