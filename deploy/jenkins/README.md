@@ -2,7 +2,7 @@
 
 ## 流程与边界
 
-流水线位于企业空间 `lec-platform`、DevOps 项目 `lec-platform-lecpunch`，名称为 `lecpunch`。它读取本仓库的 `Jenkinsfile`，只发现 `main`，约每两分钟检查一次变化；GitHub 不需要接收入站 Webhook。
+流水线位于企业空间 `lec-platform`、DevOps 项目 `lec-platform-lecpunch`，名称为 `lecpunch`。它读取本仓库的 `Jenkinsfile`，只发现 `main`，约每两分钟检查一次变化；通过 GitHub API 发现 main，避免通用 Git 源扫描时拉完整历史；GitHub 不需要接收入站 Webhook。GitHub 源复用 `lecpunch-ghcr` 读取公开仓库，并关闭 Jenkins 提交状态通知，不额外要求仓库写权限。
 
 流程为：检出同一提交 → 读取上次成功发布基线并判断范围 → 构建、类型检查、测试 → 只构建并推送受影响服务的镜像 → 归档 `release.json` → 生产发布与健康检查。
 

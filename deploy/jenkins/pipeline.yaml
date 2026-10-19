@@ -13,11 +13,13 @@ spec:
     name: lecpunch
     description: main 全部检查和受影响服务的镜像构建成功后按范围发布
     script_path: Jenkinsfile
-    source_type: git
-    git_source:
-      url: https://github.com/lec-org/LecPunch.git
+    source_type: github
+    github_source:
+      owner: lec-org
+      repo: LecPunch
+      credential_id: lecpunch-ghcr
       scm_id: lecpunch-main
-      discover_branches: true
+      discover_branches: 3
       discover_tags: false
       regex_filter: main
       git_clone_option:
