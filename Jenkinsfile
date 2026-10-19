@@ -59,8 +59,13 @@ spec:
     stage('Checkout main') {
       steps {
         // 多分支任务固定检出加载此 Jenkinsfile 的同一个 main 提交。
-        script { assert env.BRANCH_NAME == 'main' }
-        checkout scm
+        script {
+          assert env.BRANCH_NAME == 'main'
+          // 保留 SCM 的提交选择器，仅覆盖默认选项，避免拉取全部历史 Tag。
+          checkout([$class: 'GitSCM', branches: scm.branches, userRemoteConfigs: scm.userRemoteConfigs,
+            extensions: scm.extensions.findAll { !(it instanceof hudson.plugins.git.extensions.impl.CloneOption) } +
+              [[$class: 'CloneOption', shallow: true, depth: 1, noTags: true, honorRefspec: true, timeout: 10]]])
+        }
         // Git 检出由 jnlp 用户完成，构建容器只信任当前工作目录。
         sh 'git config --global --add safe.directory "$WORKSPACE"'
         script { env.RELEASE_SHA = sh(script: 'git rev-parse HEAD', returnStdout: true).trim() }
