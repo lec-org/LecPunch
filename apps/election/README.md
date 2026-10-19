@@ -28,7 +28,7 @@ pnpm --filter @lecpunch/election package:mac
 
 默认安装文件生成在 `Downloads/LecPunch-Election-Installer/`，可安装到自选目录，并创建桌面和开始菜单快捷方式。可通过 `LECPUNCH_ELECTION_OUTPUT_DIR` 指定其它输出目录。macOS 本地与 GitHub Actions 构建目前未签名、未公证，首次启动需要在 Finder 中右键应用选择“打开”，或在系统设置的“隐私与安全性”中确认打开。当前发布包保留本机 SSO/API 地址，仅用于开发机联调，不作为生产安装包。
 
-维护者先提升 `apps/election/package.json` 版本并推送，再为同一提交创建匹配的 `vX.Y.Z` Tag。`Electron Release` 会构建两种 macOS 架构、生成 SHA-256 校验文件并创建待审核 Release；人工确认资产后再发布。已安装客户端启动后会检查最新正式 GitHub Release，发现当前平台的新安装包时提示用户前往下载页。
+维护者先提升 `apps/election/package.json` 版本并推送，再为同一提交创建匹配的 `vX.Y.Z` Tag。Tag 不会自动发包。维护者需在 GitHub Actions 手动运行 `Desktop release (manual)`（`.github/workflows/desktop-release.yml`），填写该 Tag，工作流会构建两种 macOS 架构、生成 SHA-256 校验文件并创建待审核 Release；人工确认资产后再发布。已安装客户端启动后会检查最新正式 GitHub Release，发现当前平台的新安装包时提示用户前往下载页。
 
 复制 `.env.example` 为 `.env.local` 后，可配置：
 

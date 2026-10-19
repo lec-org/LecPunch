@@ -1,28 +1,19 @@
-"""Check publishing conditions without importing Linux-only deployment helpers."""
+"""防止 Actions 与 KubeSphere 同时自动部署，以及桌面端意外自动发布。"""
 
 from pathlib import Path
 import re
-from types import SimpleNamespace
 import unittest
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
-    def test_publish_jobs_only_allow_upstream_main_push(self):
-        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/ci.yml').read_text(encoding='utf-8')
-        for job in ('build-images', 'deploy'):
-            block = re.search(rf'^  {job}:\n(.*?)(?=^  [a-z]|\Z)', workflow, re.MULTILINE | re.DOTALL)
-            self.assertIsNotNone(block)
-            condition = re.search(r'^    if: (.+)$', block.group(1), re.MULTILINE).group(1)
-            for repository, event, ref, allowed in (
-                ('lec-org/LecPunch', 'push', 'refs/heads/main', True),
-                ('17hwliao/LecPunch', 'push', 'refs/heads/main', False),
-                ('lec-org/LecPunch', 'pull_request', 'refs/pull/9/merge', False),
-                ('lec-org/LecPunch', 'push', 'refs/heads/feature', False),
-            ):
-                with self.subTest(job=job, repository=repository, event=event, ref=ref):
-                    github = SimpleNamespace(repository=repository, event_name=event, ref=ref)
-                    self.assertEqual(eval(condition.replace('&&', 'and'), {'__builtins__': {}}, {'github': github}), allowed)
+    def test_actions_only_check_pr_and_desktop_requires_manual_dispatch(self):
+        root = Path(__file__).resolve().parents[2]
+        for filename, trigger in (("ci.yml", "pull_request"), ("desktop-release.yml", "workflow_dispatch")):
+            workflow = (root / ".github/workflows" / filename).read_text()
+            events = workflow.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+            self.assertEqual(re.findall(r"^  ([a-z_]+):", events, re.MULTILINE), [trigger])
+        self.assertNotIn("LEC_DEPLOY_SSH_KEY", (root / ".github/workflows/ci.yml").read_text())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -8,8 +8,8 @@ import sys
 
 def main():
     command = os.environ.get("SSH_ORIGINAL_COMMAND", "")
-    if command not in ("deploy", "check"):
-        raise ValueError("该密钥只允许 deploy 或 check")
+    if command not in ("deploy", "check", "status"):
+        raise ValueError("该密钥只允许 deploy、check 或 status")
     if sys.argv[1:] == ["cloud"]:
         args = ["ssh", "-i", "/var/lib/lecpunch-deploy/pve-key", "-o", "IdentitiesOnly=yes",
                 "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -18,8 +18,8 @@ def main():
                 "-p", "46776", "root@127.0.0.1", command]
     elif sys.argv[1:] == ["pve"]:
         args = ["pct", "exec", "103", "--", "/usr/local/sbin/lec-deploy-punch"]
-        if command == "check":
-            args.append("--check")
+        if command != "deploy":
+            args.append("--" + command)
     else:
         raise ValueError("部署入口配置不正确")
     return subprocess.call(args)

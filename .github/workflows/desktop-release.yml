@@ -1,24 +1,31 @@
-name: Electron Release
+name: Desktop release (manual)
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要手动发布的版本标签（例如 v0.1.27）
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: electron-release-${{ github.ref }}
+  group: electron-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   macos:
     runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: 校验版本
         shell: bash
@@ -28,9 +35,9 @@ jobs:
           set -euo pipefail
           VERSION="$(node -p "require('./apps/election/package.json').version")"
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$GITHUB_REF_NAME" == "v$VERSION" ]]
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "$GITHUB_REF_NAME 已存在"
+          [[ "$RELEASE_TAG" == "v$VERSION" ]]
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG 已存在"
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -71,11 +78,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             apps/election/release/*.dmg \
             apps/election/release/*.zip \
             apps/election/release/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
+            --target "$(git rev-parse HEAD)" \
             --title "LecPunch Election $VERSION" \
             --generate-notes \
             --draft

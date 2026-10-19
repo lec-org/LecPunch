@@ -1,0 +1,30 @@
+apiVersion: devops.kubesphere.io/v1alpha3
+kind: Pipeline
+metadata:
+  name: lecpunch
+  namespace: lec-platform-lecpunch
+  labels:
+    kubesphere.io/workspace: lec-platform
+  annotations:
+    kubesphere.io/creator: admin
+spec:
+  type: multi-branch-pipeline
+  multi_branch_pipeline:
+    name: lecpunch
+    description: main 全部检查和受影响服务的镜像构建成功后按范围发布
+    script_path: Jenkinsfile
+    source_type: git
+    git_source:
+      url: https://github.com/lec-org/LecPunch.git
+      scm_id: lecpunch-main
+      discover_branches: true
+      discover_tags: false
+      regex_filter: main
+      git_clone_option:
+        shallow: true
+        depth: 1
+        timeout: 10
+    timer_trigger:
+      interval: '120000'
+    discarder:
+      num_to_keep: '20'

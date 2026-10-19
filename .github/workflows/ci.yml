@@ -1,23 +1,21 @@
-name: CI
+name: PR checks
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  # main 上的发布完成后再处理后续提交，PR 仍可取消旧检查。
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
     steps:
       - name: Checkout
@@ -48,102 +46,3 @@ jobs:
 
       - name: Test deployment boundaries
         run: python3 -m unittest discover -s deploy/automation -p 'test_*.py' -v
-
-  build-images:
-    name: Build ${{ matrix.service }} image
-    needs: verify
-    if: github.repository == 'lec-org/LecPunch' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [api, web]
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
-        with:
-          context: .
-          file: apps/${{ matrix.service }}/Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: ghcr.io/lec-org/lecpunch-${{ matrix.service }}:sha-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/lec-org/LecPunch
-            org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            VITE_LOGTO_ENDPOINT=${{ vars.LOGTO_ENDPOINT }}
-            VITE_LOGTO_APP_ID=lecpunch-web
-            VITE_LOGTO_RESOURCE=https://api.lecpunch.lec.org
-            VITE_LOGTO_ORGANIZATION_ID=lec-studio
-          cache-from: type=gha,scope=lecpunch-${{ matrix.service }}
-          cache-to: type=gha,scope=lecpunch-${{ matrix.service }},mode=max
-
-  deploy:
-    name: Deploy production
-    needs: [verify, build-images]
-    if: github.repository == 'lec-org/LecPunch' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    environment: production
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: read
-      packages: read
-    steps:
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Publish verified images through restricted SSH
-        env:
-          DEPLOY_KEY: ${{ secrets.LEC_DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ vars.LEC_DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_HOST: ${{ vars.LEC_DEPLOY_HOST }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          umask 077
-          work=$(mktemp -d)
-          trap 'rm -rf "$work"' EXIT
-          export DEPLOY_WORK="$work"
-          for service in api web; do
-            docker buildx imagetools inspect \
-              "ghcr.io/lec-org/lecpunch-$service:sha-$GITHUB_SHA" \
-              --format '{{json .Manifest}}' > "$work/$service.json"
-          done
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ['DEPLOY_WORK'])
-          (root / 'key').write_text(os.environ['DEPLOY_KEY'] + '\n')
-          (root / 'known_hosts').write_text(os.environ['DEPLOY_KNOWN_HOSTS'] + '\n')
-          images = {service: f"ghcr.io/lec-org/lecpunch-{service}@{json.loads((root / (service + '.json')).read_text())['digest']}"
-                    for service in ('api', 'web')}
-          (root / 'request.json').write_text(json.dumps({
-              'sha': os.environ['GITHUB_SHA'], 'run_id': int(os.environ['GITHUB_RUN_ID']),
-              'images': images, 'actor': os.environ['GITHUB_ACTOR'], 'token': os.environ['GH_TOKEN'],
-          }))
-          PY
-          ssh -i "$work/key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work/known_hosts" \
-            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
-            "root@$DEPLOY_HOST" deploy < "$work/request.json"
-      - name: Verify public HTTPS
-        run: |
-          curl --fail --silent --show-error --retry 3 --retry-delay 5 \
-            https://47.108.49.103:49283/ | grep -q '<title>LecPunch</title>'
