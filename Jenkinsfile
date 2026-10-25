@@ -7,6 +7,10 @@ apiVersion: v1
 kind: Pod
 spec:
   automountServiceAccountToken: false
+  # 当前网络无法连接 github.com 的默认解析地址，流水线使用已验证可达的地址。
+  hostAliases:
+    - ip: '140.82.112.4'
+      hostnames: ['github.com']
   containers:
     - name: jnlp
       image: hub.kubesphere.com.cn/jenkins/inbound-agent@sha256:577e8de85fcbaca5a894bba29d0ae65b56581930918ac16499fee7cddf836677
