@@ -98,6 +98,11 @@ spec:
       }
     }
     stage('Verify') {
+      environment {
+        HTTP_PROXY = 'http://10.42.0.1:11081'
+        HTTPS_PROXY = 'http://10.42.0.1:11081'
+        NO_PROXY = 'localhost,127.0.0.1,.svc,.cluster.local,10.42.0.1,m.daocloud.io'
+      }
       steps {
         sh '''
           set -eu
@@ -114,6 +119,11 @@ spec:
     }
     stage('Build api image') {
       when { environment name: 'DEPLOY_API', value: 'true' }
+      environment {
+        HTTP_PROXY = 'http://10.42.0.1:11081'
+        HTTPS_PROXY = 'http://10.42.0.1:11081'
+        NO_PROXY = 'localhost,127.0.0.1,.svc,.cluster.local,10.42.0.1,m.daocloud.io'
+      }
       steps {
         withCredentials([usernamePassword(credentialsId: 'lecpunch-ghcr', usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
           sh '''
@@ -132,6 +142,11 @@ spec:
     }
     stage('Build web image') {
       when { environment name: 'DEPLOY_WEB', value: 'true' }
+      environment {
+        HTTP_PROXY = 'http://10.42.0.1:11081'
+        HTTPS_PROXY = 'http://10.42.0.1:11081'
+        NO_PROXY = 'localhost,127.0.0.1,.svc,.cluster.local,10.42.0.1,m.daocloud.io'
+      }
       steps {
         withCredentials([usernamePassword(credentialsId: 'lecpunch-ghcr', usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
           sh '''
