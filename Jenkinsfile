@@ -48,7 +48,7 @@ spec:
   environment {
     // Web/API 发布与现有检查不启动 Electron 运行时。
     ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
-    VITE_LOGTO_ENDPOINT = 'https://47.108.49.103:49187'
+    VITE_LOGTO_ENDPOINT = 'https://sso.lecspace.top'
     VITE_LOGTO_APP_ID = 'lecpunch-web'
     VITE_LOGTO_RESOURCE = 'https://api.lecpunch.lec.org'
     VITE_LOGTO_ORGANIZATION_ID = 'lec-studio'
