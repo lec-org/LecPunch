@@ -7,10 +7,6 @@ apiVersion: v1
 kind: Pod
 spec:
   automountServiceAccountToken: false
-  # 当前网络无法连接 github.com 的默认解析地址，流水线使用已验证可达的地址。
-  hostAliases:
-    - ip: '140.82.112.4'
-      hostnames: ['github.com']
   containers:
     - name: jnlp
       image: hub.kubesphere.com.cn/jenkins/inbound-agent@sha256:577e8de85fcbaca5a894bba29d0ae65b56581930918ac16499fee7cddf836677
@@ -52,6 +48,10 @@ spec:
   environment {
     // Web/API 发布与现有检查不启动 Electron 运行时。
     ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
+    // 仅让 GitHub 的 Git 请求走 VM104 上的 mihomo，其他构建流量保持直连。
+    GIT_CONFIG_COUNT = '1'
+    GIT_CONFIG_KEY_0 = 'http.https://github.com.proxy'
+    GIT_CONFIG_VALUE_0 = 'socks5h://10.42.0.1:11081'
     VITE_LOGTO_ENDPOINT = 'https://sso.lecspace.top'
     VITE_LOGTO_APP_ID = 'lecpunch-web'
     VITE_LOGTO_RESOURCE = 'https://api.lecpunch.lec.org'
