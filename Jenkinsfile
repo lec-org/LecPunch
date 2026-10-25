@@ -107,7 +107,9 @@ spec:
         sh '''
           set -eu
           test "$(node -p 'process.versions.node.split(".")[0]')" = 22
-          corepack prepare pnpm@8.15.4 --activate
+          # Corepack 不兼容当前代理；沿用镜像构建时的 npm 安装方式。
+          corepack disable
+          npm install -g pnpm@8.15.4 --registry=https://registry.npmjs.org/
           test "$(pnpm --version)" = 8.15.4
           pnpm install --store-dir /var/lib/containers/lecpunch-pnpm-store --frozen-lockfile --registry=https://registry.npmjs.org/
           pnpm build
