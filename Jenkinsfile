@@ -48,10 +48,6 @@ spec:
   environment {
     // Web/API 发布与现有检查不启动 Electron 运行时。
     ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
-    // 仅让 GitHub 的 Git 请求走 VM104 上的 mihomo，其他构建流量保持直连。
-    GIT_CONFIG_COUNT = '1'
-    GIT_CONFIG_KEY_0 = 'http.https://github.com.proxy'
-    GIT_CONFIG_VALUE_0 = 'socks5h://10.42.0.1:11081'
     VITE_LOGTO_ENDPOINT = 'https://sso.lecspace.top'
     VITE_LOGTO_APP_ID = 'lecpunch-web'
     VITE_LOGTO_RESOURCE = 'https://api.lecpunch.lec.org'
@@ -62,6 +58,11 @@ spec:
   stages {
     stage('Checkout main') {
       steps {
+        // Git 插件在 jnlp 容器中检出，后续 Git 命令在 base 容器中执行。
+        container('jnlp') {
+          sh 'git config --global http.https://github.com.proxy socks5h://10.42.0.1:11081'
+        }
+        sh 'git config --global http.https://github.com.proxy socks5h://10.42.0.1:11081'
         // 多分支任务固定检出加载此 Jenkinsfile 的同一个 main 提交。
         script {
           assert env.BRANCH_NAME == 'main'
