@@ -40,9 +40,8 @@ export class CardsService {
     private readonly storage: CardStorageService
   ) {}
 
-  private async context(teamId: string, random: () => number = () => { throw new Error('Randomness requires an action'); }): Promise<GameContext> {
+  private async context(teamId: string, game: Snapshot, random: () => number = () => { throw new Error('Randomness requires an action'); }): Promise<GameContext> {
     const now = Date.now(), week = getWeekKey(new Date(now));
-    const game = await this.games.findOne({ teamId }).select('state').lean().exec();
     const sessionWeeks = new Set([week]);
     for (const member of Object.values(game?.state?.members ?? {})) {
       for (const [key, value] of Object.entries(member.weeks)) {
@@ -98,9 +97,9 @@ export class CardsService {
   private futureDate(timestamp: number | undefined, now: number) { return timestamp && timestamp > now ? new Date(timestamp).toISOString() : null; }
 
   private async refresh(teamId: string): Promise<{ game: Snapshot; ctx: GameContext }> {
-    const ctx = await this.context(teamId);
     for (let attempt = 0; attempt < 8; attempt++) {
-      const game = await this.storage.load(teamId, ctx.week), state = structuredClone(game.state);
+      const game = await this.storage.load(teamId, getWeekKey(new Date()));
+      const ctx = await this.context(teamId, game), state = structuredClone(game.state);
       advanceGameState(state, ctx);
       if (JSON.stringify(state) === JSON.stringify(game.state) && !this.storage.needsArchive(game, ctx.now)) return { game, ctx };
       try {
@@ -126,9 +125,10 @@ export class CardsService {
     if (input.action === 'draw' && (input.cardId || input.targetId || input.secondTargetId)) throw new BadRequestException('抽卡不能指定卡片或目标');
     const seed = `${user.teamId}:${receiptKey}:${requestHash}`;
     for (let attempt = 0; attempt < 8; attempt++) {
-      const ctx = await this.context(user.teamId, seededCardRandom(this.config.getOrThrow<string>('AUTH_SECRET'), seed));
+      const game = await this.storage.load(user.teamId, getWeekKey(new Date()));
+      const ctx = await this.context(user.teamId, game, seededCardRandom(this.config.getOrThrow<string>('AUTH_SECRET'), seed));
       this.assertActor(user, ctx);
-      const game = await this.storage.load(user.teamId, ctx.week), previous = await this.storage.receipt(game, receiptKey);
+      const previous = await this.storage.receipt(game, receiptKey);
       if (previous) {
         if (previous.hash !== requestHash) throw new ConflictException('同一操作编号不能用于不同请求');
         const refreshed = await this.getMe(user);

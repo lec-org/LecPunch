@@ -2,6 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createConnection, type Connection, type Model } from 'mongoose';
 import { randomUUID, createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import { ServiceUnavailableException } from '@nestjs/common';
+import { AssessmentService } from '../assessment/assessment.service';
+import { AssessmentWeekSchema } from '../assessment/schemas/assessment.schema';
 import { CardGameSchema } from './schemas/card-game.schema';
 import { CardActionArchiveSchema, CardWeekArchiveSchema } from './schemas/card-archive.schema';
 import { UserSchema } from '../users/schemas/user.schema';
@@ -16,7 +19,7 @@ if (uri && !/^mongodb:\/\/127\.0\.0\.1:\d+\/?$/.test(uri)) throw new Error('Only
 const suite = uri ? describe : describe.skip;
 suite('Card outbox and immutable archives on standalone Mongo', () => {
   let connection: Connection;
-  let games: Model<any>, receipts: Model<any>, weeks: Model<any>, users: Model<any>, attendance: Model<any>, ledger: Model<any>;
+  let games: Model<any>, receipts: Model<any>, weeks: Model<any>, users: Model<any>, attendance: Model<any>, ledger: Model<any>, assessmentWeeks: Model<any>;
   let service: CardsService;
   const actor: AuthUser = { userId: '6a0000000000000000000011', teamId: '6a0000000000000000000001', username: 'test.cards', displayName: 'Cards', role: 'member', enrollYear: 2026 };
   beforeAll(async () => {
@@ -27,13 +30,14 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     users = connection.model('User', UserSchema);
     attendance = connection.model('AttendanceSession', AttendanceSessionSchema);
     ledger = connection.model('PointLedgerEntry', PointLedgerEntrySchema);
-    await Promise.all([games, receipts, weeks, users, attendance, ledger].map(model => model.init()));
+    assessmentWeeks = connection.model('AssessmentWeek', AssessmentWeekSchema);
+    await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks].map(model => model.init()));
     const storage = new CardStorageService(games, receipts, weeks);
     service = new CardsService(games, users, ledger, attendance, new ConfigService({ AUTH_SECRET: 'isolated-local-integration-key' }), storage);
   });
   beforeEach(async () => {
     vi.restoreAllMocks();
-    await Promise.all([games, receipts, weeks, users, attendance, ledger].map(model => model.deleteMany({})));
+    await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks].map(model => model.deleteMany({})));
     await users.create({ _id: actor.userId, teamId: actor.teamId, username: actor.username, displayName: actor.displayName, enrollYear: actor.enrollYear });
   });
   afterAll(async () => {
@@ -122,6 +126,14 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     expect((await service.getMemberEntertainmentHistory(actor.teamId, actor.userId))['2026-01-05']).toBe(-900);
     expect(await weeks.countDocuments()).toBe(1);
   });
+  it.each([2062, '2062', 'invalid', 2026.5, null])('returns typed unavailable for malformed saved cohort evidence %s', async year => {
+    await assessmentWeeks.collection.insertOne({ teamId: actor.teamId, weekKey: '2026-01-05', state: { requiredEnrollYears: [year] } });
+    const memberService = { listTeamMembers: async () => [{ id: actor.userId, enrollYear: actor.enrollYear }] };
+    const assessment = new AssessmentService(assessmentWeeks, {} as any, users, attendance, new ConfigService(), memberService as any, {} as any, service, {} as any);
+    await expect(assessment.memberSummaries(actor)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(await assessmentWeeks.countDocuments()).toBe(1);
+  });
+
   it('rejects invalid enrollment years at the real model boundary', async () => {
     await expect(users.create({ teamId: actor.teamId, username: 'invalid', displayName: 'Invalid', enrollYear: 2062 })).rejects.toThrow('入学年级无效');
     expect(await users.countDocuments()).toBe(1);

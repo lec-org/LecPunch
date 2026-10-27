@@ -61,7 +61,7 @@ function fixture() {
   const ledger = { aggregate: () => query(() => [{ _id: actor.userId, points: 60 }]) };
   let attendanceRows: any[] = [];
   let attendanceFilter: any;
-  const attendance = { find: (filter: unknown) => { attendanceFilter = filter; return query(() => attendanceRows); } };
+  const attendance = { find: (filter: any) => { attendanceFilter = filter; return query(() => attendanceRows.filter(row => filter.weekKey.$in.includes(row.weekKey))); } };
   const config = new ConfigService({ AUTH_SECRET: 'local-test-signing-key-of-sufficient-length' });
   const receipts = archiveModel(['teamId', 'receiptKey']), weeks = archiveModel(['teamId', 'userId', 'weekKey']);
   const storage = new CardStorageService(games as any, receipts.model, weeks.model);
@@ -91,6 +91,25 @@ describe('CardsService atomic actions and private collection', () => {
       expect((await f.service.getTeamWeekEntertainment(actor.teamId,'2026-10-19'))[actor.userId]).toBe(90);
       expect(f.document().state.members[actor.userId].weeks[current.week].mintedSeconds).toBe(0);
     } finally { clock.mockRestore(); }
+  });
+
+  it('reloads attendance context after a CAS conflict introduces a previous-week acceleration', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-26T06:01:00+08:00'));
+    try {
+      const view = await f.service.getMe(actor);
+      delete f.document().state.members[actor.userId].weeks[view.week];
+      f.setAttendance([{ _id: 'last-sunday', userId: actor.userId, weekKey: '2026-10-19',
+        checkOutAt: new Date('2026-10-25T23:50:00+08:00'), durationSeconds: 600 }]);
+      vi.spyOn(f.storage, 'commit').mockImplementationOnce(async () => {
+        f.document().state.members[actor.userId].weeks['2026-10-19'] = { entertainmentSeconds: 0, mintedSeconds: 0,
+          spentPoints: 0, freeUsed: 2, bonusDraws: 0, accelerationAt: Date.parse('2026-10-25T23:40:00+08:00') };
+        f.document().revision++;
+        return false;
+      });
+      await f.service.getMe(actor);
+      expect((await f.service.getTeamWeekEntertainment(actor.teamId, '2026-10-19'))[actor.userId]).toBe(90);
+      expect((await f.service.getMe(actor)).points.bonus).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it('returns opaque locked identities without names or rules', async () => {
