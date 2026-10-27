@@ -87,6 +87,21 @@ describe('AssessmentService safe opt-in and scoped reads', () => {
     expect((await f.service.memberSummaries(actor)).requiredEnrollYears).toEqual([2027, 2026]);
   });
 
+  it.each(['memberSummaries', 'leaderboard'] as const)('returns actionable 503 details from %s for invalid member data or saved cohort evidence', async endpoint => {
+    const f = fixture();
+    f.users.listTeamMembers.mockResolvedValue([{ ...f.member, enrollYear: 2062 }]);
+    let error: any;
+    try { await f.service[endpoint](actor); } catch (caught) { error = caught; }
+    expect(error?.getStatus()).toBe(503);
+    expect(error?.getResponse()).toMatchObject({ statusCode: 503, message: 'Invalid enrollment year: correct member data before assessment; historical snapshots were not rewritten' });
+    f.users.listTeamMembers.mockResolvedValue([f.member]);
+    f.weeks.aggregate.mockImplementation(() => q([{ latest: 2062, invalid: 1 }]));
+    try { await f.service[endpoint](actor); } catch (caught) { error = caught; }
+    expect(error?.getStatus()).toBe(503);
+    expect(error?.getResponse()).toMatchObject({ statusCode: 503, message: 'Invalid persisted cohort evidence: audited correction required; assessment remains pending' });
+    expect(f.weeks.updateOne).not.toHaveBeenCalled(); expect(f.memberships.updateOne).not.toHaveBeenCalled();
+  });
+
   it('enforces same-team history and validates pagination', async () => {
     const f = fixture();
     f.users.findByMemberKey.mockResolvedValueOnce({ ...f.member, teamId: 'other-team' });

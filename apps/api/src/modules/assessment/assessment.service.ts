@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -114,7 +114,7 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
 
   private assertEnrollmentYears(years: unknown[], week: string) {
     if (years.some(year => !isValidEnrollmentYear(year, Number(week.slice(0, 4))))) {
-      throw new Error('Invalid enrollment year: correct member data before assessment; historical snapshots were not rewritten');
+      throw new ServiceUnavailableException('Invalid enrollment year: correct member data before assessment; historical snapshots were not rewritten');
     }
   }
 
@@ -176,7 +176,7 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
       ] }, 0, 1] } } } }
     ]).exec();
     if (rows.some(row => row.invalid || !isValidEnrollmentYear(row.latest, maximum - 1))) {
-      throw new Error('Invalid persisted cohort evidence: audited correction required; assessment remains pending');
+      throw new ServiceUnavailableException('Invalid persisted cohort evidence: audited correction required; assessment remains pending');
     }
     return assessmentEnrollYears(enrollYears, rows.length ? [rows[0].latest] : [], maximum - 1);
   }

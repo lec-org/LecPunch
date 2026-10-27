@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, ServiceUnavailableException, type OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, ServiceUnavailableException, type OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,7 @@ export type CardSnapshot = {
   receipts: Record<string, CardActionReceipt>; pendingWrite?: PendingCardWrite; capacityLimited?: boolean;
 };
 const MAX_BYTES = 8 * 1024 * 1024;
+export class CardCapacityException extends ConflictException {}
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value, (_key, item) =>
   item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)).digest('hex');
@@ -19,6 +20,7 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 /** Single-document state + durable outbox: works on standalone Mongo without two-document transactions. */
 @Injectable()
 export class CardStorageService implements OnModuleInit {
+  private readonly logger = new Logger(CardStorageService.name);
   private readiness?: Promise<unknown>;
   constructor(
     @InjectModel(CardGame.name) private readonly games: Model<CardGameDocument>,
@@ -59,18 +61,29 @@ export class CardStorageService implements OnModuleInit {
       game.receipts ??= {};
       if (game.pendingWrite) {
         const pending = game.pendingWrite;
-        if (pending.receipt) await this.saveReceipt(teamId, pending.receipt.receiptKey, pending.receipt.value);
-        for (const archived of pending.weeks) {
-          const contentHash = digest(archived.week);
-          await this.weeks.updateOne({ teamId, userId: archived.userId, weekKey: archived.weekKey, contentHash }, {
-            $setOnInsert: { teamId, ...archived, contentHash }
-          }, { upsert: true }).exec();
+        try {
+          if (pending.receipt) await this.saveReceipt(teamId, pending.receipt.receiptKey, pending.receipt.value);
+          for (const archived of pending.weeks) {
+            const contentHash = digest(archived.week);
+            await this.weeks.updateOne({ teamId, userId: archived.userId, weekKey: archived.weekKey, contentHash }, {
+              $setOnInsert: { teamId, ...archived, contentHash }
+            }, { upsert: true }).exec();
+          }
+          const cleared = await this.games.updateOne({ teamId, revision: game.revision }, {
+            $unset: { pendingWrite: 1 }, $inc: { revision: 1 }
+          }).exec();
+          if (!cleared.modifiedCount) continue;
+          game.revision++; delete game.pendingWrite;
+        } catch (error) {
+          this.logger.error({
+            message: 'Pending card write recovery failed', teamId, revision: game.revision,
+            receiptKey: pending.receipt?.receiptKey,
+            archivedWeeks: pending.weeks.map(({ userId, weekKey }) => ({ userId, weekKey })),
+            errorName: error instanceof Error ? error.name : typeof error,
+            errorCode: error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+          });
+          throw error;
         }
-        const cleared = await this.games.updateOne({ teamId, revision: game.revision }, {
-          $unset: { pendingWrite: 1 }, $inc: { revision: 1 }
-        }).exec();
-        if (!cleared.modifiedCount) continue;
-        game.revision++; delete game.pendingWrite;
       }
       // Compatibility: archive a bounded batch only after its immutable copies exist.
       const legacy = Object.entries(game.receipts).slice(0, 100);
@@ -105,7 +118,7 @@ export class CardStorageService implements OnModuleInit {
     }
     const pendingWrite = receipt || weeks.length ? { ...(receipt ? { receipt } : {}), weeks } : undefined;
     if (Buffer.byteLength(JSON.stringify({ state, receipts: game.receipts, pendingWrite }), 'utf8') > MAX_BYTES) {
-      throw new ConflictException('卡牌状态达到安全容量，请联系维护者；已有卡片及操作记录保持可查询');
+      throw new CardCapacityException('卡牌状态达到安全容量，请联系维护者；已有卡片及操作记录保持可查询');
     }
     const saved = await this.games.updateOne({ teamId: game.teamId, revision: game.revision, pendingWrite: { $exists: false } }, {
       $set: { state, ...(pendingWrite ? { pendingWrite } : {}) }, $inc: { revision: 1 }

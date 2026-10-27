@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import { CardsService, cardActionHash, seededCardRandom } from './cards.service';
-import { CardStorageService } from './card-storage.service';
+import { CardCapacityException, CardStorageService } from './card-storage.service';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AuthUser } from '../auth/types/auth-user.type';
 
@@ -72,6 +73,7 @@ function fixture() {
 describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it.each(['2026-10-25T16:01:00Z', '2026-10-25T22:01:00Z'])('reconciles previous-week acceleration before reading or archiving at %s', async now => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now));
@@ -162,6 +164,14 @@ describe('CardsService atomic actions and private collection', () => {
     await expect(f.service.getMe({ ...actor, userId: '6a0000000000000000000099' })).rejects.toThrow('当前账号不可参与');
     await expect(f.service.artwork(actor, 'card-01')).rejects.toThrow('尚未发现');
     await expect(f.service.actionStatus(actor, randomUUID())).rejects.toThrow('尚未确认');
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    const confirmed = await f.service.action(actor, input);
+    const activeMember = f.members.pop()!;
+    await expect(f.service.action(actor, input)).rejects.toThrow('当前账号不可参与');
+    await expect(f.service.actionStatus(actor, input.requestKey)).rejects.toThrow('当前账号不可参与');
+    expect(f.receipts.rows.size).toBe(1);
+    f.members.push(activeMember);
+    expect((await f.service.action(actor, input)).result).toEqual(confirmed.result);
   });
 
   it('does not initialize gameplay or unknown historical weeks merely from stats reads', async () => {
@@ -190,10 +200,14 @@ describe('CardsService atomic actions and private collection', () => {
   });
 
   it('recovers a committed draw after receipt archival fails without spending or granting twice', async () => {
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     const input = { requestKey: randomUUID(), action: 'draw' as const };
     f.receipts.setFailure(true);
     await expect(f.service.action(actor, input)).rejects.toThrow('archive unavailable');
     expect(f.document().pendingWrite.receipt.value.requestKey).toBe(input.requestKey);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ message: 'Pending card write recovery failed', teamId: actor.teamId,
+      receiptKey: f.document().pendingWrite.receipt.receiptKey, archivedWeeks: [] }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain(input.requestKey);
     expect(f.document().state.members[actor.userId].weeks[Object.keys(f.document().state.members[actor.userId].weeks)[0]].freeUsed).toBe(1);
     f.receipts.setFailure(false);
     const replay = await f.service.action(actor, input);
@@ -236,11 +250,13 @@ describe('CardsService atomic actions and private collection', () => {
   });
 
   it('never returns a false zero while a committed history archive awaits recovery', async () => {
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     await f.service.getMe(actor);
     f.document().state.members[actor.userId].weeks['2026-01-05'] = { entertainmentSeconds: 1800, mintedSeconds: 0, spentPoints: 0, freeUsed: 2, bonusDraws: 0 };
     f.weeks.setFailure(true);
     await expect(f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).rejects.toThrow('archive unavailable');
     expect(f.document().pendingWrite.weeks).toHaveLength(1);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ teamId: actor.teamId, archivedWeeks: [{ userId: actor.userId, weekKey: '2026-01-05' }] }));
     await expect(f.service.getTeamWeekEntertainment(actor.teamId, '2026-01-05')).rejects.toThrow('archive unavailable');
     f.weeks.setFailure(false);
     expect(await f.service.getTeamWeekEntertainment(actor.teamId, '2026-01-05')).toEqual({ [actor.userId]: 1800 });
@@ -252,6 +268,9 @@ describe('CardsService atomic actions and private collection', () => {
     delete f.document().state.members[actor.userId].weeks[view.week];
     f.document().state.members[actor.userId].discovered.push('x'.repeat(8 * 1024 * 1024));
     expect((await f.service.getMe(actor)).capacityLimited).toBe(true);
+    const capacity = vi.spyOn(f.storage, 'commit').mockRejectedValue(new CardCapacityException('Different localized capacity message'));
+    expect((await f.service.getMe(actor)).capacityLimited).toBe(true);
+    capacity.mockRestore();
     await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('安全容量');
     expect(f.receipts.rows.size).toBe(1);
     await expect(f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).rejects.toThrow('可信结算');

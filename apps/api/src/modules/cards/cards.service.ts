@@ -15,7 +15,7 @@ import { CardGame, CardGameDocument, type CardActionReceipt } from './schemas/ca
 import { CARD_CATALOG } from './card-catalog';
 import { advanceGameState, applyGameAction, getPlayerWeek, type GameContext } from './card-engine';
 
-import { CardStorageService, type CardSnapshot as Snapshot } from './card-storage.service';
+import { CardCapacityException, CardStorageService, type CardSnapshot as Snapshot } from './card-storage.service';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const publicId = (id: string) => `card-${String(CARD_CATALOG.findIndex(card => card.id === id) + 1).padStart(2, '0')}`;
 const privateId = (id?: string) => CARD_CATALOG.find(card => publicId(card.id) === id)?.id;
@@ -106,7 +106,7 @@ export class CardsService {
       try {
         if (await this.storage.commit(game, state, ctx.now)) return { game: await this.storage.load(teamId, ctx.week), ctx };
       } catch (error) {
-        if (error instanceof ConflictException && error.message.includes('安全容量')) return { game: { ...game, capacityLimited: true }, ctx };
+        if (error instanceof CardCapacityException) return { game: { ...game, capacityLimited: true }, ctx };
         throw error;
       }
     }
