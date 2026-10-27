@@ -1,14 +1,16 @@
-import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Injectable, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
 import { AttendanceService } from '../attendance/attendance.service';
 import { UsersService } from '../users/users.service';
 import { ERROR_CODES, weeklyGoalSeconds } from '@lecpunch/shared';
 import { getWeekKey } from '../../common/utils/time.util';
+import { CardsService } from '../cards/cards.service';
 
 @Injectable()
 export class StatsService {
   constructor(
     private readonly attendanceService: AttendanceService,
-    private readonly usersService: UsersService
+    private readonly usersService: UsersService,
+    @Optional() private readonly cardsService?: CardsService
   ) {}
 
   async getMyWeeklyStats(teamId: string, userId: string, enrollYear: number, limit = 6) {
@@ -38,6 +40,18 @@ export class StatsService {
       }
     }
 
+    // A card-only week still belongs in the member's time view even without a checkout.
+    const currentWeek = this.getCurrentWeekKey();
+    const entertainmentHistory = this.cardsService
+      ? await this.cardsService.getMemberEntertainmentHistory(teamId, userId)
+      : {};
+    for (const week of Object.keys(entertainmentHistory)) {
+      if (!rowsByWeek.has(week)) rowsByWeek.set(week, { _id: week, totalDurationSeconds: 0, sessionsCount: 0 });
+    }
+    if (this.cardsService && !rowsByWeek.has(currentWeek)) {
+      rowsByWeek.set(currentWeek, { _id: currentWeek, totalDurationSeconds: 0, sessionsCount: 0 });
+    }
+
     return [...rowsByWeek.values()]
       .sort((left, right) => right._id.localeCompare(left._id))
       .slice(0, limit)
@@ -45,14 +59,18 @@ export class StatsService {
       const recordedDurationSeconds = row.totalDurationSeconds ?? 0;
       const adjustmentSummary = adjustmentSummaries.get(`${userId}:${row._id}`);
       const manualAdjustmentSeconds = adjustmentSummary?.manualAdjustmentSeconds ?? 0;
+      const entertainmentSeconds = entertainmentHistory[row._id] ?? 0;
+      const totalDurationSeconds = Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds) + entertainmentSeconds;
+      const goal = row.weeklyGoalSecondsSnapshot ?? weeklyGoalSeconds(enrollYear);
       return {
         weekKey: row._id,
-        totalDurationSeconds: Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds),
+        totalDurationSeconds,
         recordedDurationSeconds,
         manualAdjustmentSeconds,
         adjustmentsCount: adjustmentSummary?.adjustmentsCount ?? 0,
         sessionsCount: row.sessionsCount,
-        weeklyGoalSeconds: row.weeklyGoalSecondsSnapshot ?? weeklyGoalSeconds(enrollYear)
+        weeklyGoalSeconds: goal,
+        ...(this.cardsService ? { entertainmentSeconds, assessmentComplete: totalDurationSeconds >= goal } : {})
       };
     });
   }
@@ -95,16 +113,21 @@ export class StatsService {
       this.attendanceService.getManualAdjustmentSummaries(teamId, memberIds)
     ]);
     const statsByUserId = new Map(rows.map((row) => [row._id, row]));
+    const entertainment = await this.cardsService?.getTeamWeekEntertainment(teamId, weekKey) ?? {};
 
-    return members
+    const items = members
       .map((member) => {
         const stats = statsByUserId.get(member.id);
         const recordedDurationSeconds = stats?.totalDurationSeconds ?? 0;
         const adjustmentSummary = adjustmentSummaries.get(`${member.id}:${weekKey}`);
         const manualAdjustmentSeconds = adjustmentSummary?.manualAdjustmentSeconds ?? 0;
+        const entertainmentSeconds = entertainment[member.id] ?? 0;
+        const goal = weeklyGoalSeconds(member.enrollYear);
+        const totalDurationSeconds = Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds) + entertainmentSeconds;
         return {
           memberKey: this.usersService.getMemberKey(member.id),
-          totalDurationSeconds: Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds),
+          totalDurationSeconds,
+          ...(this.cardsService ? { entertainmentSeconds, weeklyGoalSeconds: goal, assessmentComplete: totalDurationSeconds >= goal } : {}),
           recordedDurationSeconds,
           manualAdjustmentSeconds,
           adjustmentsCount: adjustmentSummary?.adjustmentsCount ?? 0,
@@ -127,6 +150,12 @@ export class StatsService {
           right.sessionsCount - left.sessionsCount ||
           left.displayName.localeCompare(right.displayName)
       );
+    let previous: number | undefined, rank = 0;
+    return this.cardsService ? items.map((item, index) => {
+      if (item.totalDurationSeconds !== previous) rank = index + 1;
+      previous = item.totalDurationSeconds;
+      return { ...item, rank };
+    }) : items;
   }
 
   async getMemberWeeklyStats(currentUserTeamId: string, memberKey: string, limit = 6) {

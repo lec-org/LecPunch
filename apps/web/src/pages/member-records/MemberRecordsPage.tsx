@@ -13,7 +13,7 @@ import {
 import { getMemberWeeklyStats, type MemberWeeklyStatsResponse } from '@/features/stats/stats.api';
 import { useAsyncData } from '@/shared/hooks/useAsyncData';
 import { getApiErrorMessage } from '@/shared/lib/api-error';
-import { formatDateTime, formatDuration } from '@/shared/lib/time';
+import { formatDateTime, formatComprehensiveDuration, formatDuration } from '@/shared/lib/time';
 import { DateRangePicker } from '@/shared/ui/DateRangePicker';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
@@ -256,7 +256,7 @@ export const MemberRecordsPage = () => {
             <Avatar name={memberName} size="md" />
             <div>
               <h1 className="text-2xl font-bold text-gray-900">{memberName} 的打卡记录</h1>
-              <p className="mt-1 text-sm text-gray-500">时长统计口径为服务端确认的有效累计时长。</p>
+              <p className="mt-1 text-sm text-gray-500">周汇总为综合时长，包含有效打卡、管理员调整与卡牌娱乐时长；流水保留原始打卡时长。</p>
             </div>
           </div>
         </div>
@@ -301,9 +301,9 @@ export const MemberRecordsPage = () => {
                 <span className="font-medium text-gray-900">{latestStat.weekKey}</span>
               </div>
               <div className="text-sm">
-                <span className="text-gray-500">有效累计时长：</span>
+                <span className="text-gray-500">综合时长：</span>
                 <span className="font-mono text-base font-bold text-blue-600">
-                  {formatDuration(latestStat.totalDurationSeconds)}
+                  {formatComprehensiveDuration(latestStat.totalDurationSeconds)}
                 </span>
               </div>
               <div className="text-sm">

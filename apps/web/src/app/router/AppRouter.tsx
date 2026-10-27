@@ -1,4 +1,4 @@
-import { createBrowserRouter, RouterProvider, Outlet } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Outlet, Navigate } from 'react-router-dom';
 import { AppProviders } from '../providers/AppProviders';
 import { ToastContainer } from '@/shared/ui/toast';
 import { ErrorBoundary } from '@/app/components/ErrorBoundary';
@@ -28,6 +28,7 @@ import { SubmitMessagePage } from '@/pages/messages/SubmitMessagePage';
 import { AdminMessagesPage } from '@/pages/admin-messages/AdminMessagesPage';
 import { AdminNoticesPage } from '@/pages/admin-notices/AdminNoticesPage';
 import { AdminDurationPage } from '@/pages/admin-duration/AdminDurationPage';
+import { CardsPage } from '@/pages/cards/CardsPage';
 
 // Root wrapper inside the router context — safe to use useNavigate here
 const Root = () => (
@@ -73,6 +74,8 @@ const router = createBrowserRouter([
               { path: 'members', element: <MembersPage /> },
               { path: 'members/:memberKey/records', element: <MemberRecordsPage /> },
               { path: 'weekly-history', element: <WeeklyHistoryPage /> },
+              { path: 'cards', element: <CardsPage /> },
+              { path: 'time-rankings', element: <Navigate to="/members" replace /> },
               { path: 'events', element: <EventsPage /> },
               { path: 'profile', element: <ProfilePage /> },
               {

@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
 import { AttendanceSession, AttendanceSessionDocument } from '../attendance/schemas/attendance-session.schema';
-import { ERROR_CODES, UserRole, UserStatus, type LecUser } from '@lecpunch/shared';
+import { ERROR_CODES, UserRole, UserStatus, isValidEnrollmentYear, type LecUser } from '@lecpunch/shared';
 import * as bcrypt from 'bcrypt';
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { AuthUser } from '../auth/types/auth-user.type';
@@ -46,6 +46,7 @@ export class UsersService {
   ) {}
 
   create(payload: CreateUserInput) {
+    if (!isValidEnrollmentYear(payload.enrollYear)) throw new BadRequestException('入学年级无效，请核对学号年份');
     return this.userModel.create({
       ...payload,
       role: payload.role ?? 'member'

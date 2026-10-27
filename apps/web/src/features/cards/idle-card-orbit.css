@@ -1,0 +1,30 @@
+@property --orbit-angle{syntax:"<angle>";inherits:false;initial-value:0deg}
+.card-orbit-shell{border:1px solid #e5e7eb;border-radius:20px;background:linear-gradient(155deg,#fff 45%,#f1f5f9);overflow:hidden}
+.card-orbit-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 24px 0;position:relative;z-index:2}
+.card-orbit-eyebrow{font-size:10px;letter-spacing:.22em;color:#6b7280;margin:0 0 7px}
+.card-orbit-header h2{font-size:19px;font-weight:500;margin:0;color:#111827}
+.card-orbit-header p:not(.card-orbit-eyebrow){font-size:12px;color:#6b7280;margin:7px 0 0}
+.card-orbit-toggle{display:flex;align-items:center;gap:6px;border:1px solid #d1d5db;border-radius:99px;background:#fff;padding:8px 12px;font-size:12px;color:#4b5563;white-space:nowrap;cursor:pointer}
+.card-orbit-toggle:focus-visible{outline:2px solid #2563eb;outline-offset:3px}
+.card-orbit-stage{cursor:grab;touch-action:pan-y;user-select:none;position:relative;height:320px;isolation:isolate;perspective:1100px;--orbit-x:clamp(115px,25vw,300px);--orbit-y:58px;--orbit-z:100px}
+.card-orbit-stage.is-dragging{cursor:grabbing}.card-orbit-stage:focus-visible{outline:2px solid #2563eb;outline-offset:-4px}.card-orbit-space{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none}
+.card-orbit-position{position:absolute;left:50%;top:46%;width:104px;height:156px;margin:-78px 0 0 -52px;transform-style:preserve-3d;animation:lec-card-orbit 34s linear infinite;animation-delay:calc(-34s * var(--slot) / var(--slots));will-change:transform;transform:translate3d(calc(cos(calc(var(--orbit-angle) + var(--orbit-offset,0deg))) * var(--orbit-x)),calc(sin(calc(var(--orbit-angle) + var(--orbit-offset,0deg))) * var(--orbit-y)),calc(sin(calc(var(--orbit-angle) + var(--orbit-offset,0deg))) * var(--orbit-z))) rotateY(calc(-1 * var(--orbit-angle) - var(--orbit-offset,0deg) - 20deg))}
+.card-orbit-card{position:relative;width:100%;height:100%;transform:rotateZ(var(--tilt));transform-style:preserve-3d;animation:lec-card-drift 7s ease-in-out infinite;animation-delay:calc(var(--slot) * -1s)}
+.card-orbit-front,.card-orbit-back{position:absolute;inset:0;border:1px solid #d1d5db;border-radius:11px;background:#f8fafc;backface-visibility:hidden;overflow:hidden;box-shadow:0 12px 22px #33415512}
+.card-orbit-face{padding:5px;display:flex;flex-direction:column;background:#fff}.card-orbit-front{transform:translateZ(.1px)}
+.card-orbit-face[data-rarity=R]{border-color:#93c5fd}.card-orbit-face[data-rarity=SR]{border-color:#c4b5fd}.card-orbit-face[data-rarity=SSR]{border-color:#d6b46d}
+.card-orbit-face>div:first-child{flex:1;min-height:0;aspect-ratio:auto;border-radius:7px}.card-orbit-face img{object-fit:cover}.card-orbit-face span{font-size:9px}
+.card-orbit-unknown{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#a1a1aa;background:linear-gradient(#fafafa,#f0f1f3)}
+.card-orbit-label{display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:9px;padding:6px 1px 1px;color:#6b7280;white-space:nowrap;overflow:hidden}
+.card-orbit-label span:last-child{overflow:hidden;text-overflow:ellipsis}
+.card-orbit-back{transform:rotateY(180deg) translateZ(.1px)}
+.card-orbit-track{position:absolute;left:50%;top:45%;width:calc(var(--orbit-x) * 2.15);height:160px;border:1px solid #cbd5e160;border-radius:50%;transform:translate(-50%,-50%) rotate(-7deg);box-shadow:0 0 0 36px #e2e8f015,0 0 0 72px #e2e8f00b}
+.card-orbit-core{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);width:82px;height:82px;border-radius:50%;background:radial-gradient(circle,#fff,#f1f5f9);border:1px solid #e2e8f0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:5px;color:#94a3b8;box-shadow:0 0 50px #cbd5e130}
+.card-orbit-core span{font-size:10px;letter-spacing:.16em}
+.card-orbit-caption{text-align:center;color:#6b7280;font-size:11px;padding:0 16px 18px;margin:0}
+.card-draw-animation-slot{position:absolute;inset:0;z-index:5;pointer-events:none}
+.card-orbit-stage:hover .card-orbit-position,.card-orbit-stage:hover .card-orbit-card,.card-orbit-stage.is-paused .card-orbit-position,.card-orbit-stage.is-paused .card-orbit-card,.card-orbit-stage.is-dragging .card-orbit-position,.card-orbit-stage.is-dragging .card-orbit-card,.card-orbit-stage:focus-within .card-orbit-position,.card-orbit-stage:focus-within .card-orbit-card{animation-play-state:paused}
+@keyframes lec-card-orbit{from{--orbit-angle:0deg}to{--orbit-angle:360deg}}
+@keyframes lec-card-drift{0%,100%{transform:rotateZ(var(--tilt)) translateY(0)}50%{transform:rotateZ(calc(var(--tilt) * -0.6)) translateY(-9px)}}
+@media(max-width:640px){.card-orbit-header{padding:18px 16px 0}.card-orbit-header h2{font-size:17px}.card-orbit-stage{height:280px;--orbit-x:clamp(90px,22vw,145px);--orbit-y:55px;--orbit-z:55px}.card-orbit-position{width:80px;height:120px;margin:-60px 0 0 -40px}.card-orbit-core{width:62px;height:62px}.card-orbit-label{padding-top:4px}.card-orbit-caption{font-size:10px}.card-orbit-toggle{font-size:11px;padding:7px 9px}}
+@media(prefers-reduced-motion:reduce){.card-orbit-position,.card-orbit-card{animation:none!important}.card-orbit-position{--orbit-angle:calc(360deg * var(--slot) / var(--slots))}}

@@ -10,10 +10,9 @@ import {
   CHART_TOOLTIP_CONTENT_STYLE,
   CHART_TOOLTIP_ITEM_STYLE,
   CHART_TOOLTIP_LABEL_STYLE,
-  formatSecondsAsHours,
   formatWeekKeyForAxis
 } from '@/shared/lib/chart';
-import { formatDuration, formatWeekRangeLabel, isCurrentWeekKey } from '@/shared/lib/time';
+import { formatComprehensiveDuration, formatComprehensiveHours, formatDuration, formatWeekRangeLabel, isCurrentWeekKey } from '@/shared/lib/time';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
 
@@ -64,9 +63,9 @@ export const WeeklyHistoryPage = () => {
     },
     {
       key: 'totalDurationSeconds',
-      header: '累计时长',
+      header: '综合时长',
       cellClassName: 'font-mono text-base font-bold text-gray-800',
-      render: (value) => formatDuration(value)
+      render: (value) => formatComprehensiveDuration(value)
     },
     {
       key: 'sessionsCount',
@@ -85,7 +84,7 @@ export const WeeklyHistoryPage = () => {
           <div className="space-y-2">
             <Progress value={progress} className="w-44" />
             <div className="text-xs text-gray-500">
-              {`${Math.round(Math.min(progress, 100))}% / 目标 ${formatDuration(progressGoalSeconds)}`}
+              {`${Math.round(Math.max(0, Math.min(progress, 100)))}% / 目标 ${formatDuration(progressGoalSeconds)}`}
             </div>
           </div>
         );
@@ -103,10 +102,10 @@ export const WeeklyHistoryPage = () => {
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-gray-900">周时长趋势</h2>
-              <p className="mt-1 text-xs text-gray-500">基于每周有效打卡累计时长绘制（单位：小时）</p>
+                <p className="mt-1 text-xs text-gray-500">基于每周综合时长绘制，包含管理员调整与卡牌娱乐时长（单位：小时）</p>
             </div>
             <div className="rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
-              周均时长：<span className="font-semibold">{formatSecondsAsHours(averageDurationSeconds)}</span>
+              周均时长：<span className="font-semibold">{formatComprehensiveHours(averageDurationSeconds)}</span>
             </div>
           </div>
 
@@ -139,19 +138,19 @@ export const WeeklyHistoryPage = () => {
                   tickLine={false}
                   width={56}
                   tick={{ fill: CHART_COLORS.axisText, fontSize: 12 }}
-                  tickFormatter={(value) => formatSecondsAsHours(Number(value), 1)}
+                  tickFormatter={(value) => formatComprehensiveHours(Number(value), 1)}
                 />
                 <Tooltip
                   contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
                   labelStyle={CHART_TOOLTIP_LABEL_STYLE}
                   itemStyle={CHART_TOOLTIP_ITEM_STYLE}
-                  formatter={(value) => formatSecondsAsHours(Number(value), 2)}
+                  formatter={(value) => formatComprehensiveHours(Number(value), 2)}
                   labelFormatter={(_, payload) => payload?.[0]?.payload?.weekKey ?? ''}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Line
                   type="monotone"
-                  name="累计时长"
+                  name="综合时长"
                   dataKey="totalDurationSeconds"
                   stroke={CHART_COLORS.duration}
                   strokeWidth={2.5}

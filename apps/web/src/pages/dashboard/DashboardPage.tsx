@@ -56,6 +56,7 @@ export const DashboardPage = () => {
     selectedWeekStat?.recordedDurationSeconds ??
     selectedWeekRecords.reduce((sum, record) => sum + (record.durationSeconds ?? 0), 0);
   const selectedWeekManualAdjustment = selectedWeekStat?.manualAdjustmentSeconds ?? 0;
+  const selectedWeekEntertainment = selectedWeekStat?.entertainmentSeconds ?? 0;
   const selectedWeekAdjustmentsCount = selectedWeekStat?.adjustmentsCount ?? 0;
   const selectedWeekSessionsCount = selectedWeekStat?.sessionsCount ?? selectedWeekRecords.length;
 
@@ -142,6 +143,7 @@ export const DashboardPage = () => {
       selectedWeekDuration,
       selectedWeekRecordedDuration,
       selectedWeekManualAdjustment,
+      selectedWeekEntertainment,
       selectedWeekAdjustmentsCount,
       selectedWeekSessionsCount,
       weeklyGoalSeconds,
@@ -165,6 +167,7 @@ export const DashboardPage = () => {
       selectedWeekDuration,
       selectedWeekRecordedDuration,
       selectedWeekManualAdjustment,
+      selectedWeekEntertainment,
       selectedWeekAdjustmentsCount,
       selectedWeekSessionsCount,
       weeklyGoalSeconds,

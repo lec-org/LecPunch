@@ -19,6 +19,8 @@ import { GitHubSourcesModule } from './modules/github-sources/github-sources.mod
 import { WeeklyReportsModule } from './modules/weekly-reports/weekly-reports.module';
 import { PointsModule } from './modules/points/points.module';
 import { MeetModule } from './modules/meet/meet.module';
+import { CardsModule } from './modules/cards/cards.module';
+import { AssessmentModule } from './modules/assessment/assessment.module';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { MeetModule } from './modules/meet/meet.module';
     GitHubSourcesModule,
     WeeklyReportsModule,
     PointsModule,
+    CardsModule,
+    AssessmentModule,
     MeetModule,
     AttendanceModule,
     RecordsModule,

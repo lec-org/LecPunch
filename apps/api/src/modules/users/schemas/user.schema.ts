@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { UserRole, UserStatus } from '@lecpunch/shared';
+import { UserRole, UserStatus, isValidEnrollmentYear } from '@lecpunch/shared';
 
 @Schema({ timestamps: true, collection: 'users' })
 export class User {
@@ -39,7 +39,7 @@ export class User {
   })
   status!: UserStatus;
 
-  @Prop({ required: true, type: Number })
+  @Prop({ required: true, type: Number, validate: { validator: (value: number) => isValidEnrollmentYear(value), message: '入学年级无效' } })
   enrollYear!: number;
 
   @Prop({ type: String, sparse: true, unique: true, index: true })

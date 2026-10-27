@@ -48,6 +48,11 @@ describe('UsersService', () => {
   });
 
 
+  it.each([2062, 1999, 2025.5, NaN, Infinity])('rejects invalid enrollment year %s before database creation', year => {
+    expect(() => service.create({ username: 'new', displayName: 'New', teamId: 'team-1', enrollYear: year })).toThrow(BadRequestException);
+    expect(userModel.create).not.toHaveBeenCalled();
+  });
+
   describe('syncLecProfile', () => {
     const user = { id: 'user1', username: 'old.handle', realName: '旧真名', avatarUrl: 'https://sso.example.com/old.png' };
     it('未改变的 SSO 资料不写数据库', async () => {
