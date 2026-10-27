@@ -10,10 +10,9 @@ import {
   CHART_TOOLTIP_CONTENT_STYLE,
   CHART_TOOLTIP_ITEM_STYLE,
   CHART_TOOLTIP_LABEL_STYLE,
-  formatSecondsAsHours,
   formatWeekKeyForAxis
 } from '@/shared/lib/chart';
-import { formatComprehensiveDuration, formatDuration, formatWeekRangeLabel, isCurrentWeekKey } from '@/shared/lib/time';
+import { formatComprehensiveDuration, formatComprehensiveHours, formatDuration, formatWeekRangeLabel, isCurrentWeekKey } from '@/shared/lib/time';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
 
@@ -64,7 +63,7 @@ export const WeeklyHistoryPage = () => {
     },
     {
       key: 'totalDurationSeconds',
-      header: '累计时长',
+      header: '综合时长',
       cellClassName: 'font-mono text-base font-bold text-gray-800',
       render: (value) => formatComprehensiveDuration(value)
     },
@@ -106,7 +105,7 @@ export const WeeklyHistoryPage = () => {
                 <p className="mt-1 text-xs text-gray-500">基于每周综合时长绘制，包含管理员调整与卡牌娱乐时长（单位：小时）</p>
             </div>
             <div className="rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
-              周均时长：<span className="font-semibold">{formatSecondsAsHours(averageDurationSeconds)}</span>
+              周均时长：<span className="font-semibold">{formatComprehensiveHours(averageDurationSeconds)}</span>
             </div>
           </div>
 
@@ -139,19 +138,19 @@ export const WeeklyHistoryPage = () => {
                   tickLine={false}
                   width={56}
                   tick={{ fill: CHART_COLORS.axisText, fontSize: 12 }}
-                  tickFormatter={(value) => formatSecondsAsHours(Number(value), 1)}
+                  tickFormatter={(value) => formatComprehensiveHours(Number(value), 1)}
                 />
                 <Tooltip
                   contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
                   labelStyle={CHART_TOOLTIP_LABEL_STYLE}
                   itemStyle={CHART_TOOLTIP_ITEM_STYLE}
-                  formatter={(value) => formatSecondsAsHours(Number(value), 2)}
+                  formatter={(value) => formatComprehensiveHours(Number(value), 2)}
                   labelFormatter={(_, payload) => payload?.[0]?.payload?.weekKey ?? ''}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Line
                   type="monotone"
-                  name="累计时长"
+                  name="综合时长"
                   dataKey="totalDurationSeconds"
                   stroke={CHART_COLORS.duration}
                   strokeWidth={2.5}

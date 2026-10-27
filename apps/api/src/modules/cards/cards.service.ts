@@ -13,10 +13,9 @@ import { AttendanceSession, AttendanceSessionDocument } from '../attendance/sche
 import { PointLedgerEntry, PointLedgerEntryDocument } from '../points/schemas/point-ledger-entry.schema';
 import { CardGame, CardGameDocument, type CardActionReceipt } from './schemas/card-game.schema';
 import { CARD_CATALOG } from './card-catalog';
-import { advanceGameState, applyGameAction, createGameState, getPlayerWeek, type GameContext, type GameState } from './card-engine';
+import { advanceGameState, applyGameAction, getPlayerWeek, type GameContext } from './card-engine';
 
-type Snapshot = { teamId: string; revision: number; startWeek: string; state: GameState; receipts: Record<string, CardActionReceipt>; capacityLimited?: boolean };
-const MAX_BYTES = 8 * 1024 * 1024;
+import { CardStorageService, type CardSnapshot as Snapshot } from './card-storage.service';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const publicId = (id: string) => `card-${String(CARD_CATALOG.findIndex(card => card.id === id) + 1).padStart(2, '0')}`;
 const privateId = (id?: string) => CARD_CATALOG.find(card => publicId(card.id) === id)?.id;
@@ -37,7 +36,8 @@ export class CardsService {
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     @InjectModel(PointLedgerEntry.name) private readonly ledger: Model<PointLedgerEntryDocument>,
     @InjectModel(AttendanceSession.name) private readonly attendance: Model<AttendanceSessionDocument>,
-    private readonly config: ConfigService
+    private readonly config: ConfigService,
+    private readonly storage: CardStorageService
   ) {}
 
   private async context(teamId: string, random: () => number = () => { throw new Error('Randomness requires an action'); }): Promise<GameContext> {
@@ -65,30 +65,11 @@ export class CardsService {
     };
   }
 
-  private async load(teamId: string, week: string): Promise<Snapshot> {
-    try {
-      await this.games.updateOne({ teamId }, { $setOnInsert: { teamId, revision: 0, startWeek: week, state: createGameState(), receipts: {} } }, { upsert: true }).exec();
-    } catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
-    const game = await this.games.findOne({ teamId }).lean().exec();
-    if (!game) throw new ServiceUnavailableException('卡牌存储暂时不可用');
-    return game as unknown as Snapshot;
-  }
-
   private assertActor(user: AuthUser, context: GameContext) {
     if (!context.players.some(player => player.id === user.userId)) throw new ForbiddenException('当前账号不可参与卡牌活动');
   }
 
-  private async commit(game: Snapshot, state: GameState, receipts = game.receipts) {
-    if (Buffer.byteLength(JSON.stringify({ state, receipts }), 'utf8') > MAX_BYTES) {
-      throw new ConflictException('卡牌记录达到安全容量，请联系维护者归档；已有卡片及操作记录保持可查询');
-    }
-    const saved = await this.games.updateOne({ teamId: game.teamId, revision: game.revision }, {
-      $set: { state, receipts }, $inc: { revision: 1 }
-    }).exec();
-    return saved.modifiedCount === 1;
-  }
-
-  private view(game: Snapshot, user: AuthUser, ctx: GameContext): CardGameView {
+  private async view(game: Snapshot, user: AuthUser, ctx: GameContext): Promise<CardGameView> {
     const week = getPlayerWeek(game.state, user.userId, ctx.week);
     const player = game.state.members[user.userId];
     const earned = ctx.earnedPoints[user.userId] ?? 0, bonus = Math.floor(week.mintedSeconds / 60);
@@ -110,9 +91,7 @@ export class CardsService {
       }),
       players: ctx.players.filter(member => member.enrollYear === own.enrollYear).map(member => ({ id: member.id, username: member.username, displayName: member.name, enrollYear: member.enrollYear })),
       statuses: { acceleration: week.accelerationAt !== undefined, immuneUntil: this.futureDate(week.immuneUntil, ctx.now), lockedUntil: this.futureDate(week.lockedUntil, ctx.now), starvedUntil: this.futureDate(week.starvedUntil, ctx.now) },
-      events: Object.entries(game.receipts).filter(([, receipt]) => receipt.actorId === user.userId)
-        .sort(([, a], [, b]) => b.at.localeCompare(a.at)).slice(0, 20)
-        .map(([id, receipt]) => ({ id, at: receipt.at, message: receipt.result.message }))
+      events: await this.storage.events(game, user.userId)
     };
   }
 
@@ -121,15 +100,15 @@ export class CardsService {
   private async refresh(teamId: string): Promise<{ game: Snapshot; ctx: GameContext }> {
     const ctx = await this.context(teamId);
     for (let attempt = 0; attempt < 8; attempt++) {
-      const game = await this.load(teamId, ctx.week), state = structuredClone(game.state);
+      const game = await this.storage.load(teamId, ctx.week), state = structuredClone(game.state);
       advanceGameState(state, ctx);
-      if (JSON.stringify(state) === JSON.stringify(game.state)) return { game, ctx };
-      // Never discard receipts to reclaim room: an old request could otherwise spend twice.
-      // At capacity, keep already committed data readable until a deliberate archive exists.
-      if (Buffer.byteLength(JSON.stringify({ state, receipts: game.receipts }), 'utf8') > MAX_BYTES) {
-        return { game: { ...game, capacityLimited: true }, ctx };
+      if (JSON.stringify(state) === JSON.stringify(game.state) && !this.storage.needsArchive(game, ctx.now)) return { game, ctx };
+      try {
+        if (await this.storage.commit(game, state, ctx.now)) return { game: await this.storage.load(teamId, ctx.week), ctx };
+      } catch (error) {
+        if (error instanceof ConflictException && error.message.includes('安全容量')) return { game: { ...game, capacityLimited: true }, ctx };
+        throw error;
       }
-      if (await this.commit(game, state)) return { game: { ...game, state, revision: game.revision + 1 }, ctx };
     }
     throw new ConflictException('卡牌状态正在更新，请刷新后重试');
   }
@@ -149,7 +128,7 @@ export class CardsService {
     for (let attempt = 0; attempt < 8; attempt++) {
       const ctx = await this.context(user.teamId, seededCardRandom(this.config.getOrThrow<string>('AUTH_SECRET'), seed));
       this.assertActor(user, ctx);
-      const game = await this.load(user.teamId, ctx.week), previous = game.receipts[receiptKey];
+      const game = await this.storage.load(user.teamId, ctx.week), previous = await this.storage.receipt(game, receiptKey);
       if (previous) {
         if (previous.hash !== requestHash) throw new ConflictException('同一操作编号不能用于不同请求');
         const refreshed = await this.getMe(user);
@@ -168,8 +147,10 @@ export class CardsService {
         ...(result.ssrPity !== undefined ? { ssrPity: result.ssrPity } : {})
       };
       const receipt: CardActionReceipt = { actorId: user.userId, requestKey: input.requestKey, hash: requestHash, at: new Date(ctx.now).toISOString(), result: resultView };
-      const receipts = { ...game.receipts, [receiptKey]: receipt };
-      if (await this.commit(game, state, receipts)) return { result: resultView, state: this.view({ ...game, state, receipts }, user, ctx) };
+      if (await this.storage.commit(game, state, ctx.now, { receiptKey, value: receipt })) {
+        const saved = await this.storage.load(user.teamId, ctx.week);
+        return { result: resultView, state: await this.view(saved, user, ctx) };
+      }
     }
     throw new ConflictException('多人操作冲突，请使用原操作编号重试');
   }
@@ -177,9 +158,9 @@ export class CardsService {
   async actionStatus(user: AuthUser, requestKey: string): Promise<CardGameActionResponse> {
     if (!UUID.test(requestKey)) throw new BadRequestException('操作编号格式不正确');
     const { game, ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
-    const receipt = game.receipts[hash(`${user.userId}:${requestKey}`)];
+    const receipt = await this.storage.receipt(game, hash(`${user.userId}:${requestKey}`));
     if (!receipt) throw new NotFoundException('该操作尚未确认，请使用原操作编号重试');
-    return { result: receipt.result, state: this.view(game, user, ctx) };
+    return { result: receipt.result, state: await this.view(game, user, ctx) };
   }
 
   async artwork(user: AuthUser, id: string): Promise<string> {
@@ -200,8 +181,16 @@ export class CardsService {
     if (weekKey === getWeekKey(new Date()) ||
       Object.values(game.state.members).some(member => member.weeks[weekKey]?.accelerationAt !== undefined)) {
       game = (await this.refresh(teamId)).game;
+      if (game.capacityLimited) throw new ServiceUnavailableException('娱乐时长尚未完成可信结算，请联系维护者');
     }
-    return Object.fromEntries(Object.entries(game.state.members).map(([id, member]) => [id, member.weeks[weekKey]?.entertainmentSeconds ?? 0]));
+    game = await this.storage.load(teamId, getWeekKey(new Date()));
+    const archived = await this.storage.archivedWeeks(teamId, { weekKey });
+    const values = Object.fromEntries(archived.map(row => [row.userId, row.week.entertainmentSeconds]));
+    for (const [id, member] of Object.entries(game.state.members)) {
+      if (member.weeks[weekKey]) values[id] = member.weeks[weekKey].entertainmentSeconds;
+      else values[id] ??= 0;
+    }
+    return values;
   }
 
   async getTeamGameStartWeek(teamId: string): Promise<string | null> {
@@ -213,7 +202,10 @@ export class CardsService {
     const existing = await this.games.findOne({ teamId }).select('teamId').lean().exec();
     if (!existing) return {};
     const { game } = await this.refresh(teamId);
+    if (game.capacityLimited) throw new ServiceUnavailableException('娱乐时长尚未完成可信结算，请联系维护者');
     const member = game.state.members[userId];
-    return member ? Object.fromEntries(Object.entries(member.weeks).map(([week, value]) => [week, value.entertainmentSeconds])) : {};
+    const archived = await this.storage.archivedWeeks(teamId, { userId });
+    return { ...Object.fromEntries(archived.map(row => [row.weekKey, row.week.entertainmentSeconds])),
+      ...Object.fromEntries(Object.entries(member?.weeks ?? {}).map(([week, value]) => [week, value.entertainmentSeconds])) };
   }
 }

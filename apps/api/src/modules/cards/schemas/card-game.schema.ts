@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes } from 'mongoose';
-import type { GameState } from '../card-engine';
+import type { GameState, PlayerWeek } from '../card-engine';
 import type { CardGameActionResult } from '@lecpunch/shared';
 
 export interface CardActionReceipt {
@@ -11,6 +11,11 @@ export interface CardActionReceipt {
   at: string;
 }
 
+export interface PendingCardWrite {
+  receipt?: { receiptKey: string; value: CardActionReceipt };
+  weeks: { userId: string; weekKey: string; week: PlayerWeek }[];
+}
+
 @Schema({ collection: 'card_games', timestamps: true })
 export class CardGame {
   @Prop({ type: String, required: true, unique: true }) teamId!: string;
@@ -18,6 +23,7 @@ export class CardGame {
   @Prop({ type: String, required: true }) startWeek!: string;
   @Prop({ type: SchemaTypes.Mixed, required: true }) state!: GameState;
   @Prop({ type: SchemaTypes.Mixed, default: {} }) receipts!: Record<string, CardActionReceipt>;
+  @Prop({ type: SchemaTypes.Mixed }) pendingWrite?: PendingCardWrite;
 }
 export type CardGameDocument = HydratedDocument<CardGame>;
 export const CardGameSchema = SchemaFactory.createForClass(CardGame);

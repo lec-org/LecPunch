@@ -150,9 +150,12 @@ export class StatsService {
           right.sessionsCount - left.sessionsCount ||
           left.displayName.localeCompare(right.displayName)
       );
-    return this.cardsService ? items.map(item => ({ ...item,
-      rank: items.findIndex(other => other.totalDurationSeconds === item.totalDurationSeconds) + 1
-    })) : items;
+    let previous: number | undefined, rank = 0;
+    return this.cardsService ? items.map((item, index) => {
+      if (item.totalDurationSeconds !== previous) rank = index + 1;
+      previous = item.totalDurationSeconds;
+      return { ...item, rank };
+    }) : items;
   }
 
   async getMemberWeeklyStats(currentUserTeamId: string, memberKey: string, limit = 6) {

@@ -102,7 +102,7 @@ export function createAssessmentWeek(weekKey: string, observedAt: number, member
   }
   assertMembers(members);
   const state: AssessmentWeekState = {version: 1, weekKey, ...bounds, enabledAt,
-    requiredEnrollYears: assessmentEnrollYears(members.map(member => member.enrollYear), previousRequiredEnrollYears),
+    requiredEnrollYears: assessmentEnrollYears(members.map(member => member.enrollYear), previousRequiredEnrollYears, Number(weekKey.slice(0, 4))),
     firstObservedAt: observedAt, lastObservedAt: observedAt,
     coverageTrusted: observedAt <= bounds.startsAt + OBSERVATION_GAP_MS,
     roster: {}, outcomes: {}};
@@ -121,7 +121,7 @@ export function observeAssessmentWeek(state: AssessmentWeekState, observedAt: nu
   next.lastObservedAt = Math.max(next.lastObservedAt, coverageUntil);
   // Changes seen only after the boundary do not alter eligibility in the closed week.
   if (observedAt >= next.endsAt) return next;
-  next.requiredEnrollYears = assessmentEnrollYears(members.map(member => member.enrollYear), [...(next.requiredEnrollYears ?? []), ...previousRequiredEnrollYears]);
+  next.requiredEnrollYears = assessmentEnrollYears(members.map(member => member.enrollYear), [...(next.requiredEnrollYears ?? []), ...previousRequiredEnrollYears], Number(next.weekKey.slice(0, 4)));
   const observed = new Map(members.map(member => [member.userId, member]));
   for (const [userId, entry] of Object.entries(next.roster)) {
     if (next.outcomes[userId] && next.outcomes[userId].status !== 'pending') continue;

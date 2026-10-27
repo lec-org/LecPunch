@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DateTime } from 'luxon';
-import { assessmentEnrollYears, requiresWeeklyAssessment, weeklyGoalSeconds, type AssessmentLeaderboardView, type AssessmentMemberHistory, type AssessmentMemberSummaries } from '@lecpunch/shared';
+import { assessmentEnrollYears, isValidEnrollmentYear, requiresWeeklyAssessment, weeklyGoalSeconds, type AssessmentLeaderboardView, type AssessmentMemberHistory, type AssessmentMemberSummaries } from '@lecpunch/shared';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { UsersService } from '../users/users.service';
@@ -63,37 +63,58 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
     const currentWeek = getWeekKey(new Date(now));
     if (!startWeek || enabledAt === null || currentWeek < startWeek) return;
     const teams = await this.userModel.distinct('teamId').exec();
+    const failures: Error[] = [];
     for (const teamId of teams) {
       if (typeof teamId !== 'string' || !/^[a-f\d]{24}$/i.test(teamId)) continue;
-      const members = await this.userModel.find({ teamId }).lean().exec();
-      // Eligibility starts from a real registration observed by this module, never user.createdAt alone.
-      for (const member of members) if (member.status === 'active') {
-        try { await this.memberships.updateOne({ teamId, userId: String(member._id) }, {
-          $setOnInsert: { teamId, userId: String(member._id), registeredAt: new Date(now) }
-        }, { upsert: true }).exec(); }
-        catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
+      try { await this.observeTeam(teamId, now, startWeek, enabledAt, currentWeek); }
+      catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        failures.push(failure);
+        this.logger.error(`Team ${teamId}: ${failure.message}`);
       }
-      const admissions = await this.memberships.find({ teamId }).lean().exec();
-      const admitted = new Map(admissions.map(member => [member.userId, new Date(member.registeredAt).getTime()]));
-      const snapshots: AssessmentMemberSnapshot[] = members.map(member => ({
-        userId: String(member._id), enrollYear: member.enrollYear, goalSeconds: this.goal(member.enrollYear),
-        createdAt: member.createdAt ? new Date(member.createdAt).getTime() : null,
-        joinedAt: admitted.get(String(member._id)) ?? null,
-        status: member.status === 'active' || member.status === 'disabled' ? member.status : 'unknown'
-      }));
-      const requiredYears = await this.observedRequiredYears(teamId, snapshots.map(member => member.enrollYear), currentWeek);
-      try { await this.weeks.updateOne({ teamId, weekKey: currentWeek }, { $setOnInsert: {
-        teamId, weekKey: currentWeek, revision: 0, state: createAssessmentWeek(currentWeek, now, snapshots, enabledAt, requiredYears)
-      } }, { upsert: true }).exec(); }
+    }
+    if (failures.length) throw Object.assign(new Error(failures.map(error => error.message).join('; ')), { errors: failures });
+  }
+
+  private async observeTeam(teamId: string, now: number, startWeek: string, enabledAt: number, currentWeek: string) {
+    const members = await this.userModel.find({ teamId }).lean().exec();
+    this.assertEnrollmentYears(members.map(member => member.enrollYear), currentWeek);
+    const requiredYears = await this.observedRequiredYears(teamId, members.map(member => member.enrollYear), currentWeek);
+    // Eligibility starts from a real registration observed by this module, never user.createdAt alone.
+    for (const member of members) if (member.status === 'active') {
+      try { await this.memberships.updateOne({ teamId, userId: String(member._id) }, {
+        $setOnInsert: { teamId, userId: String(member._id), registeredAt: new Date(now) }
+      }, { upsert: true }).exec(); }
       catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
-      await this.updateWeek(teamId, currentWeek, state => observeAssessmentWeek(state, now, snapshots, requiredYears));
-      const past = await this.weeks.find({ teamId, weekKey: { $lt: currentWeek, $gte: startWeek } }).lean().exec();
-      for (const week of past) {
-        if (now < week.state.endsAt + 5 * 3_600_000) continue;
-        if (Object.keys(week.state.roster).every(id => week.state.outcomes[id] && week.state.outcomes[id].status !== 'pending')) continue;
-        const totals = await this.totals(teamId, week.weekKey, Object.keys(week.state.roster));
-        await this.updateWeek(teamId, week.weekKey, state => finalizeAssessmentWeek(observeAssessmentWeek(state, now, []), now, totals));
-      }
+    }
+    const admissions = await this.memberships.find({ teamId }).lean().exec();
+    const admitted = new Map(admissions.map(member => [member.userId, new Date(member.registeredAt).getTime()]));
+    const snapshots: AssessmentMemberSnapshot[] = members.map(member => ({
+      userId: String(member._id), enrollYear: member.enrollYear, goalSeconds: this.goal(member.enrollYear),
+      createdAt: member.createdAt ? new Date(member.createdAt).getTime() : null,
+      joinedAt: admitted.get(String(member._id)) ?? null,
+      status: member.status === 'active' || member.status === 'disabled' ? member.status : 'unknown'
+    }));
+    try { await this.weeks.updateOne({ teamId, weekKey: currentWeek }, { $setOnInsert: {
+      teamId, weekKey: currentWeek, revision: 0, state: createAssessmentWeek(currentWeek, now, snapshots, enabledAt, requiredYears)
+    } }, { upsert: true }).exec(); }
+    catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
+    await this.updateWeek(teamId, currentWeek, state => observeAssessmentWeek(state, now, snapshots, requiredYears));
+    const past = await this.weeks.find({ teamId, weekKey: { $lt: currentWeek, $gte: startWeek } }).lean().exec();
+    for (const week of past) {
+      if (now < week.state.endsAt + 5 * 3_600_000) continue;
+      if (Object.keys(week.state.roster).every(id => week.state.outcomes[id] && week.state.outcomes[id].status !== 'pending')) continue;
+      // Determine immutable observation failures without querying duration dependencies every minute.
+      const preliminary = finalizeAssessmentWeek(observeAssessmentWeek(week.state, now, []), now, {});
+      const needsTotals = Object.values(preliminary.outcomes).some(outcome => outcome.status === 'pending' && outcome.reason === 'invalid_totals');
+      const totals = needsTotals ? await this.totals(teamId, week.weekKey, Object.keys(week.state.roster)) : {};
+      await this.updateWeek(teamId, week.weekKey, state => finalizeAssessmentWeek(observeAssessmentWeek(state, now, []), now, totals));
+    }
+  }
+
+  private assertEnrollmentYears(years: unknown[], week: string) {
+    if (years.some(year => !isValidEnrollmentYear(year, Number(week.slice(0, 4))))) {
+      throw new Error('Invalid enrollment year: correct member data before assessment; historical snapshots were not rewritten');
     }
   }
 
@@ -145,11 +166,19 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
   private async observedRequiredYears(teamId: string, enrollYears: Array<number | null | undefined>, throughWeek: string) {
     // A previous week's final observation can commit after the next week was created.
     // Read the team-wide high-water mark, rather than assuming the latest week contains it.
-    const rows = await this.weeks.aggregate<{ latest: number }>([
+    this.assertEnrollmentYears(enrollYears, throughWeek);
+    const maximum = Number(throughWeek.slice(0, 4)) + 1;
+    const rows = await this.weeks.aggregate<{ latest: number; invalid?: number }>([
       { $match: { teamId, weekKey: { $lte: throughWeek } } }, { $unwind: '$state.requiredEnrollYears' },
-      { $group: { _id: null, latest: { $max: '$state.requiredEnrollYears' } } }
+      { $group: { _id: null, latest: { $max: '$state.requiredEnrollYears' }, invalid: { $sum: { $cond: [{ $and: [
+        { $gte: ['$state.requiredEnrollYears', 2000] }, { $lte: ['$state.requiredEnrollYears', maximum] },
+        { $eq: ['$state.requiredEnrollYears', { $trunc: '$state.requiredEnrollYears' }] }
+      ] }, 0, 1] } } } }
     ]).exec();
-    return assessmentEnrollYears(enrollYears, rows.length ? [rows[0].latest] : []);
+    if (rows.some(row => row.invalid || !isValidEnrollmentYear(row.latest, maximum - 1))) {
+      throw new Error('Invalid persisted cohort evidence: audited correction required; assessment remains pending');
+    }
+    return assessmentEnrollYears(enrollYears, rows.length ? [rows[0].latest] : [], maximum - 1);
   }
 
   async memberSummaries(user: AuthUser): Promise<AssessmentMemberSummaries> {

@@ -48,7 +48,7 @@ describe('AssessmentService safe opt-in and scoped reads', () => {
   });
   it('does not finalize with zeroes when a dependency fails or raw durations are malformed', async () => {
     const f = fixture({ ASSESSMENT_START_WEEK: '2026-10-19' });
-    const state = createAssessmentWeek('2026-10-19', at('2026-10-19T00:00:00'), [{ userId: actor.userId, status: 'active', createdAt: at('2026-01-01'), joinedAt: at('2026-01-01'), goalSeconds: 3600 }], at('2026-10-19'));
+    const state = createAssessmentWeek('2026-10-19', at('2026-10-19T00:00:00'), [{ userId: actor.userId, enrollYear: 2025, status: 'active', createdAt: at('2026-01-01'), joinedAt: at('2026-01-01'), goalSeconds: 3600 }], at('2026-10-19'));
     state.lastObservedAt = at('2026-10-25T23:59:00');
     f.weeks.find.mockImplementation(() => q([{ teamId: actor.teamId, weekKey: state.weekKey, revision: 0, state }]));
     f.sessions.find.mockImplementation(() => q([{ userId: actor.userId, durationSeconds: 'invalid' }]));
@@ -57,6 +57,36 @@ describe('AssessmentService safe opt-in and scoped reads', () => {
     f.sessions.find.mockImplementation(() => q([])); f.cards.getTeamWeekEntertainment.mockRejectedValueOnce(new Error('database unavailable'));
     await expect(f.service.observeNow(at('2026-10-26T06:00:00'))).rejects.toThrow('database unavailable');
   });
+  it('continues observing later teams when the first team cannot read settlement totals', async () => {
+    const f = fixture({ ASSESSMENT_START_WEEK: '2026-10-19' });
+    const second = '6a0000000000000000000002';
+    f.userModel.distinct.mockImplementation(() => q([actor.teamId, second]));
+    const state = createAssessmentWeek('2026-10-19', at('2026-10-19'), [{ userId: actor.userId, enrollYear: 2025, status: 'active', createdAt: at('2026-01-01'), joinedAt: at('2026-01-01'), goalSeconds: 3600 }], at('2026-10-19'));
+    state.lastObservedAt = at('2026-10-25T23:59:00');
+    f.weeks.find.mockImplementation(({ teamId }: any) => q(teamId === actor.teamId ? [{ teamId, weekKey: state.weekKey, revision: 0, state }] : []));
+    f.cards.getTeamWeekEntertainment.mockRejectedValueOnce(new Error('first team unavailable'));
+    await expect(f.service.observeNow(at('2026-10-26T06:00:00'))).rejects.toThrow('first team unavailable');
+    expect(f.weeks.updateOne.mock.calls.some(call => call[0].teamId === second && call[1].$setOnInsert)).toBe(true);
+  });
+  it('does not repeatedly query totals for permanent observation gaps after week end', async () => {
+    const f = fixture({ ASSESSMENT_START_WEEK: '2026-10-19' });
+    const state = createAssessmentWeek('2026-10-19', at('2026-10-19T01:00:00'), [{ userId: actor.userId, enrollYear: 2025, status: 'active', createdAt: at('2026-01-01'), joinedAt: at('2026-01-01'), goalSeconds: 3600 }], at('2026-10-19'));
+    f.weeks.find.mockImplementation(() => q([{ teamId: actor.teamId, weekKey: state.weekKey, revision: 0, state }]));
+    await f.service.observeNow(at('2026-10-26T06:00:00'));
+    expect(f.sessions.find).not.toHaveBeenCalled();
+    expect(f.cards.getTeamWeekEntertainment).not.toHaveBeenCalled();
+  });
+  it('rejects invalid existing or persisted cohort data before assessment writes without discarding disabled admission evidence', async () => {
+    const f = fixture({ ASSESSMENT_START_WEEK: '2026-10-26' });
+    f.userModel.find.mockImplementation(() => q([{ _id: actor.userId, status: 'disabled', enrollYear: 2062 }]));
+    await expect(f.service.observeNow(at('2026-10-26T00:01:00'))).rejects.toThrow('Invalid enrollment year');
+    expect(f.weeks.updateOne).not.toHaveBeenCalled(); expect(f.memberships.updateOne).not.toHaveBeenCalled();
+    f.weeks.aggregate.mockImplementation(() => q([{ latest: 2062, invalid: 1 }]));
+    await expect(f.service.memberSummaries(actor)).rejects.toThrow('Invalid persisted cohort');
+    f.weeks.aggregate.mockImplementation(() => q([{ latest: 2027, invalid: 0 }]));
+    expect((await f.service.memberSummaries(actor)).requiredEnrollYears).toEqual([2027, 2026]);
+  });
+
   it('enforces same-team history and validates pagination', async () => {
     const f = fixture();
     f.users.findByMemberKey.mockResolvedValueOnce({ ...f.member, teamId: 'other-team' });
@@ -80,7 +110,7 @@ describe('AssessmentService safe opt-in and scoped reads', () => {
   it('scopes cohort evidence and failure counts to the authenticated team and preserves zero counts', async () => {
     const f = fixture({ ASSESSMENT_START_WEEK: '2026-10-26' });
     f.users.listTeamMembers.mockResolvedValue([f.member, { ...f.member, id: 'member-b' }]);
-    f.weeks.aggregate.mockImplementation(() => q([{ _id: actor.userId, count: 2 }]));
+    f.weeks.aggregate.mockImplementation((pipeline: any) => q(pipeline.some((stage: any) => stage.$group?.latest) ? [] : [{ _id: actor.userId, count: 2 }]));
     const result = await f.service.memberSummaries(actor);
     expect(result.enabled).toBe(true);
     expect(result.requiredEnrollYears).toEqual([2025, 2024]);

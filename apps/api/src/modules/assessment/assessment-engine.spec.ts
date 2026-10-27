@@ -21,6 +21,8 @@ describe('assessment snapshot boundaries',()=>{
     expect(assessmentEnrollYears([2024, 2025, 2026])).toEqual([2026, 2025]);
     expect(assessmentEnrollYears([2025], [2026, 2025])).toEqual([2026, 2025]);
     expect(assessmentEnrollYears([null, undefined, NaN])).toEqual([]);
+    expect(assessmentEnrollYears([2026, 2025, 2062], [2062, 2061], 2026)).toEqual([2026, 2025]);
+    expect(assessmentEnrollYears([2026, 2027], [], 2026)).toEqual([2027, 2026]);
     expect(requiresWeeklyAssessment(2027, [2026, 2025])).toBe(false);
     expect(requiresWeeklyAssessment(NaN, [2026, 2025])).toBe(false);
   });

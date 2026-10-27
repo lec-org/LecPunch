@@ -297,7 +297,7 @@ const MembersWorkspace = () => {
     },
     {
       key: 'totalDurationSeconds',
-      header: renderSortHeader('打卡时长', 'duration'),
+      header: renderSortHeader('综合时长', 'duration'),
       headerClassName: 'normal-case tracking-normal',
       cellClassName: 'whitespace-nowrap font-mono text-base font-bold text-gray-800',
       render: (value) => formatComprehensiveDuration(value)

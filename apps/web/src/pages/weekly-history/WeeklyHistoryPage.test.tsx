@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { WeeklyHistoryPage } from './WeeklyHistoryPage';
+import { formatComprehensiveHours } from '@/shared/lib/time';
 
 const mocks = vi.hoisted(() => ({
   getMyWeeklyStats: vi.fn()
@@ -20,6 +21,15 @@ describe('WeeklyHistoryPage', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('retains signed comprehensive values in the table, average and shared chart formatter', async () => {
+    mocks.getMyWeeklyStats.mockResolvedValue({ items: [{ weekKey: '2026-10-26', totalDurationSeconds: -900, sessionsCount: 0, weeklyGoalSeconds: 3600 }], weeklyGoalSeconds: 3600 });
+    render(<MemoryRouter><WeeklyHistoryPage /></MemoryRouter>);
+    expect(await screen.findByText('−00:15:00')).toBeInTheDocument();
+    expect(screen.getByText('-0.3h')).toBeInTheDocument();
+    expect(formatComprehensiveHours(-900, 2)).toBe('-0.25h');
+    expect(screen.getByRole('columnheader', { name: '综合时长' })).toBeInTheDocument();
   });
 
   it('shows loading state before weekly stats resolve', () => {

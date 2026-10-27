@@ -6,11 +6,14 @@ import { AttendanceSession, AttendanceSessionSchema } from '../attendance/schema
 import { PointLedgerEntry, PointLedgerEntrySchema } from '../points/schemas/point-ledger-entry.schema';
 import { CardsController } from './cards.controller';
 import { CardsService } from './cards.service';
+import { CardStorageService } from './card-storage.service';
+import { CardActionArchive, CardActionArchiveSchema, CardWeekArchive, CardWeekArchiveSchema } from './schemas/card-archive.schema';
 @Module({
   imports: [MongooseModule.forFeature([
     { name: CardGame.name, schema: CardGameSchema }, { name: User.name, schema: UserSchema },
+    { name: CardActionArchive.name, schema: CardActionArchiveSchema }, { name: CardWeekArchive.name, schema: CardWeekArchiveSchema },
     { name: AttendanceSession.name, schema: AttendanceSessionSchema }, { name: PointLedgerEntry.name, schema: PointLedgerEntrySchema }
   ])],
-  controllers: [CardsController], providers: [CardsService], exports: [CardsService]
+  controllers: [CardsController], providers: [CardsService, CardStorageService], exports: [CardsService]
 })
 export class CardsModule {}

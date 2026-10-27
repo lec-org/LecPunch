@@ -1,21 +1,57 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import { CardsService, cardActionHash, seededCardRandom } from './cards.service';
+import { CardStorageService } from './card-storage.service';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AuthUser } from '../auth/types/auth-user.type';
 
 const actor: AuthUser = { userId: '6a0000000000000000000011', teamId: '6a0000000000000000000001', role: 'member', username: 'test.alpha', displayName: '测试成员', enrollYear: 2025 };
-const query = (get: () => unknown): any => ({ lean() { return this; }, select() { return this; }, exec: async () => structuredClone(get()) });
+const query = (get: () => any): any => {
+  let limit = Infinity, sort: any;
+  return { lean() { return this; }, select() { return this; }, sort(value: any) { sort = value; return this; }, limit(value: number) { limit = value; return this; }, exec: async () => {
+    let result = structuredClone(get());
+    if (Array.isArray(result)) {
+      if (sort) result.sort((a, b) => b.at.localeCompare(a.at) || a.receiptKey.localeCompare(b.receiptKey));
+      result = result.slice(0, limit);
+    }
+    return result;
+  } };
+};
+function archiveModel(keyFields: string[]) {
+  const rows = new Map<string, any>(); let fail = false;
+  const match = (row: any, where: any) => Object.entries(where).every(([key, value]) => row[key] === value);
+  const model: any = {
+    init: async () => undefined,
+    findOne: (where: any) => query(() => [...rows.values()].find(row => match(row, where)) ?? null),
+    find: (where: any) => query(() => [...rows.values()].filter(row => match(row, where))),
+    updateOne: (where: any, update: any) => ({ exec: async () => {
+      if (fail) throw new Error('archive unavailable');
+      const key = keyFields.map(k => where[k]).join(':');
+      const old = rows.get(key);
+      if (old && !match(old, where)) throw Object.assign(new Error('duplicate archive'), { code: 11000 });
+      if (!old) rows.set(key, structuredClone(update.$setOnInsert));
+      return { modifiedCount: old ? 0 : 1 };
+    } }),
+    bulkWrite: async (operations: any[]) => { for (const { updateOne: op } of operations) await model.updateOne(op.filter, op.update).exec(); }
+  };
+  return { model, rows, setFailure: (value: boolean) => { fail = value; } };
+}
 
 function fixture() {
   let document: any = null;
   const games = {
+    init: async () => undefined,
     findOne: ({ teamId }: any) => query(() => document?.teamId === teamId ? document : null),
     updateOne: (where: any, update: any) => ({ exec: async () => {
       if (!document && update.$setOnInsert) { document = structuredClone(update.$setOnInsert); return { modifiedCount: 0 }; }
       if (where.revision !== undefined && document?.revision !== where.revision) return { modifiedCount: 0 };
+      if (where.pendingWrite?.$exists === false && document?.pendingWrite) return { modifiedCount: 0 };
       if (update.$set) Object.assign(document, structuredClone(update.$set));
       if (update.$inc) document.revision += update.$inc.revision;
+      for (const key of Object.keys(update.$unset ?? {})) {
+        if (key.startsWith('receipts.')) delete document.receipts[key.slice(9)];
+        else delete document[key];
+      }
       return { modifiedCount: update.$set ? 1 : 0 };
     } })
   };
@@ -26,8 +62,10 @@ function fixture() {
   let attendanceFilter: any;
   const attendance = { find: (filter: unknown) => { attendanceFilter = filter; return query(() => attendanceRows); } };
   const config = new ConfigService({ AUTH_SECRET: 'local-test-signing-key-of-sufficient-length' });
-  const service = new CardsService(games as any, users as any, ledger as any, attendance as any, config);
-  return { service, document: () => document, members,
+  const receipts = archiveModel(['teamId', 'receiptKey']), weeks = archiveModel(['teamId', 'userId', 'weekKey']);
+  const storage = new CardStorageService(games as any, receipts.model, weeks.model);
+  const service = new CardsService(games as any, users as any, ledger as any, attendance as any, config, storage);
+  return { service, storage, games, receipts, weeks, document: () => document, members,
     setAttendance: (rows: any[]) => { attendanceRows = rows; }, attendanceFilter: () => attendanceFilter };
 }
 
@@ -35,8 +73,8 @@ describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
 
-  it('reads pending previous-week checkouts before returning old entertainment history', async () => {
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-25T16:01:00Z'));
+  it.each(['2026-10-25T16:01:00Z', '2026-10-25T22:01:00Z'])('reconciles previous-week acceleration before reading or archiving at %s', async now => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now));
     try {
       const current = await f.service.getMe(actor);
       f.document().state.members[actor.userId].weeks['2026-10-19'] = {
@@ -72,7 +110,8 @@ describe('CardsService atomic actions and private collection', () => {
     expect(replay.state.freeRemaining).toBe(1);
     expect(replay.state.collection.reduce((n, card) => n + card.quantity, 0)).toBe(1);
     expect(replay.state.collection.filter(card => card.unlocked)).toHaveLength(1);
-    expect(Object.keys(f.document().receipts)).toHaveLength(1);
+    expect(f.receipts.rows.size).toBe(1);
+    expect(Object.keys(f.document().receipts)).toHaveLength(0);
     await expect(f.service.action(actor, { ...input, action: 'use', cardId: 'card-01' })).rejects.toThrow('同一操作编号不能用于不同请求');
   });
 
@@ -103,7 +142,8 @@ describe('CardsService atomic actions and private collection', () => {
     expect(replay.result).toEqual(first.result);
     expect(status.result).toEqual(first.result);
     expect(status.state.collection.reduce((n, card) => n + card.quantity, 0)).toBe(2);
-    expect(Object.keys(f.document().receipts)).toHaveLength(1);
+    expect(f.receipts.rows.size).toBe(1);
+    expect(Object.keys(f.document().receipts)).toHaveLength(0);
     expect(JSON.stringify(first.result)).not.toContain('ssr-');
   });
 
@@ -149,14 +189,72 @@ describe('CardsService atomic actions and private collection', () => {
     expect(cardActionHash({ action: 'use', cardId: 'card-01' })).not.toBe(cardActionHash({ action: 'gift', cardId: 'card-01' }));
   });
 
-  it('rejects new writes at capacity without discarding receipts or breaking read access', async () => {
+  it('recovers a committed draw after receipt archival fails without spending or granting twice', async () => {
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    f.receipts.setFailure(true);
+    await expect(f.service.action(actor, input)).rejects.toThrow('archive unavailable');
+    expect(f.document().pendingWrite.receipt.value.requestKey).toBe(input.requestKey);
+    expect(f.document().state.members[actor.userId].weeks[Object.keys(f.document().state.members[actor.userId].weeks)[0]].freeUsed).toBe(1);
+    f.receipts.setFailure(false);
+    const replay = await f.service.action(actor, input);
+    expect(replay.state.freeRemaining).toBe(1);
+    expect(replay.state.collection.reduce((n, card) => n + card.quantity, 0)).toBe(1);
+    expect(f.document().pendingWrite).toBeUndefined();
+    expect(f.receipts.rows.size).toBe(1);
+    expect((await f.service.actionStatus(actor, input.requestKey)).result).toEqual(replay.result);
+  });
+
+  it('archives old receipts before removing their legacy copy and preserves old replay', async () => {
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    const first = await f.service.action(actor, input);
+    const [key, record] = [...f.receipts.rows.entries()][0];
+    const { teamId, receiptKey, contentHash, ...value } = record;
+    f.document().receipts[receiptKey] = value; f.receipts.rows.clear();
+    f.receipts.setFailure(true);
+    await expect(f.service.getMe(actor)).rejects.toThrow('archive unavailable');
+    expect(f.document().receipts[receiptKey]).toBeDefined();
+    f.receipts.setFailure(false);
+    expect((await f.service.action(actor, input)).result).toEqual(first.result);
+    expect(f.document().receipts[receiptKey]).toBeUndefined();
+    expect(f.receipts.rows.get(key).requestKey).toBe(input.requestKey);
+  });
+
+  it('keeps closed signed entertainment history outside live state and retains permanent inventory and pity', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-02T06:00:00+08:00'));
+    try {
+      await f.service.getMe(actor);
+      const member = f.document().state.members[actor.userId];
+      member.inventory['r-add'] = 3; member.pitySSR = 12;
+      member.weeks['2026-10-26'] = { entertainmentSeconds: -900, mintedSeconds: 0, spentPoints: 60, freeUsed: 2, bonusDraws: 0 };
+      await f.service.getMe(actor);
+      expect(f.document().state.members[actor.userId].weeks['2026-10-26']).toBeUndefined();
+      expect(f.weeks.rows.size).toBe(1);
+      expect(await f.service.getTeamWeekEntertainment(actor.teamId, '2026-10-26')).toEqual({ [actor.userId]: -900 });
+      expect((await f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId))['2026-10-26']).toBe(-900);
+      expect(f.document().state.members[actor.userId]).toMatchObject({ inventory: { 'r-add': 3 }, pitySSR: 12 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('never returns a false zero while a committed history archive awaits recovery', async () => {
+    await f.service.getMe(actor);
+    f.document().state.members[actor.userId].weeks['2026-01-05'] = { entertainmentSeconds: 1800, mintedSeconds: 0, spentPoints: 0, freeUsed: 2, bonusDraws: 0 };
+    f.weeks.setFailure(true);
+    await expect(f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).rejects.toThrow('archive unavailable');
+    expect(f.document().pendingWrite.weeks).toHaveLength(1);
+    await expect(f.service.getTeamWeekEntertainment(actor.teamId, '2026-01-05')).rejects.toThrow('archive unavailable');
+    f.weeks.setFailure(false);
+    expect(await f.service.getTeamWeekEntertainment(actor.teamId, '2026-01-05')).toEqual({ [actor.userId]: 1800 });
+  });
+
+  it('rejects genuinely oversized live state without deleting receipts or breaking read access', async () => {
+    const first = await f.service.action(actor, { requestKey: randomUUID(), action: 'draw' });
     const view = await f.service.getMe(actor);
     delete f.document().state.members[actor.userId].weeks[view.week];
-    f.document().receipts.padding = { actorId: 'another-user', requestKey: 'original', hash: 'old-hash', at: new Date().toISOString(), result: { message: 'x'.repeat(8 * 1024 * 1024) } };
+    f.document().state.members[actor.userId].discovered.push('x'.repeat(8 * 1024 * 1024));
     expect((await f.service.getMe(actor)).capacityLimited).toBe(true);
     await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('安全容量');
-    expect(f.document().receipts.padding.requestKey).toBe('original');
-    expect(Object.keys(f.document().receipts)).toHaveLength(1);
-    expect((await f.service.getMe(actor)).collection.every(card => card.quantity === 0)).toBe(true);
+    expect(f.receipts.rows.size).toBe(1);
+    await expect(f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).rejects.toThrow('可信结算');
+    expect((await f.service.getMe(actor)).collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(1);
   });
 });

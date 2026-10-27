@@ -1,4 +1,7 @@
 /** Comprehensive weekly time may be negative; raw session formatting stays unchanged. */
+export const formatComprehensiveHours = (seconds: number, maximumFractionDigits = 1) =>
+  `${(seconds / 3600).toLocaleString('zh-CN', { maximumFractionDigits })}h`;
+
 export const formatComprehensiveDuration = (seconds: number) =>
   `${seconds < 0 ? '−' : ''}${formatDuration(Math.abs(seconds))}`;
 
