@@ -26,6 +26,36 @@ describe('StatsService', () => {
     service = new StatsService(attendanceService as any, usersService as any);
   });
 
+  it('adds signed entertainment after clamping attendance and ranks equal totals together', async () => {
+    aggregate.mockReturnValue({exec: vi.fn().mockResolvedValue([
+      {_id: 'user-1', totalDurationSeconds: 600, sessionsCount: 1},
+      {_id: 'user-2', totalDurationSeconds: 1200, sessionsCount: 3}
+    ])});
+    usersService.listTeamMembers.mockResolvedValue([
+      {id: 'user-1', displayName: 'A', role: 'member', enrollYear: 2025},
+      {id: 'user-2', displayName: 'B', role: 'member', enrollYear: 2025},
+      {id: 'user-3', displayName: 'C', role: 'member', enrollYear: 2025}
+    ]);
+    const cards = {getTeamWeekEntertainment: vi.fn().mockResolvedValue({'user-1': 600, 'user-2': 0, 'user-3': -1800})};
+    service = new StatsService(attendanceService as any, usersService as any, cards as any);
+    const rows = await service.getTeamCurrentWeekStats('team-1');
+    expect(rows.map(row => row.totalDurationSeconds)).toEqual([1200, 1200, -1800]);
+    expect(rows.map(row => (row as any).rank)).toEqual([1, 1, 3]);
+    expect(rows[2]).toMatchObject({recordedDurationSeconds: 0, entertainmentSeconds: -1800, assessmentComplete: false});
+    expect(cards.getTeamWeekEntertainment).toHaveBeenCalledWith('team-1', expect.any(String));
+  });
+
+  it('includes a current card-only week in personal summaries without changing raw time', async () => {
+    aggregate.mockReturnValue({exec: vi.fn().mockResolvedValue([])});
+    // The card service uses Shanghai Monday keys; freeze to an explicit week.
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-26T12:00:00Z'));
+    const cards = {getMemberEntertainmentHistory: vi.fn().mockResolvedValue({'2026-10-26': -900})};
+    service = new StatsService(attendanceService as any, usersService as any, cards as any);
+    const rows = await service.getMyWeeklyStats('team-1', 'user-1', 2025);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({totalDurationSeconds: -900, recordedDurationSeconds: 0, entertainmentSeconds: -900, assessmentComplete: false});
+  });
+
   it('returns every team member, including members without current-week sessions', async () => {
     aggregate.mockReturnValue({
       exec: vi.fn().mockResolvedValue([

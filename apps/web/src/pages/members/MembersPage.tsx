@@ -3,11 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowDown, ArrowUp, ArrowUpDown, Eye, Search, X } from 'lucide-react';
 import { Avatar, Badge, Button, DataTable, type ColumnDef } from '@lecpunch/ui';
-import type { TeamWeeklyStatItem } from '@lecpunch/shared';
+import type { AssessmentMemberSummaries, TeamWeeklyStatItem } from '@lecpunch/shared';
+import { useAuthStore } from '@/app/store/auth-store';
+import { getAssessmentMemberSummaries } from '@/features/assessment/assessment.api';
+import { AssessmentHistoryDialog } from '@/features/assessment/AssessmentHistoryDialog';
+import { MemberWeeklyAssessmentBadge } from '@/features/assessment/MemberWeeklyAssessmentBadge';
 import { getTeamCurrentWeekStats } from '@/features/stats/stats.api';
 import { useAsyncData } from '@/shared/hooks/useAsyncData';
 import { getApiErrorMessage } from '@/shared/lib/api-error';
-import { formatDuration } from '@/shared/lib/time';
+import { formatComprehensiveDuration, formatDuration } from '@/shared/lib/time';
 import { cn } from '@/shared/lib/utils';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
@@ -94,6 +98,13 @@ const buildSearchParams = (state: MembersViewState) => {
 };
 
 export const MembersPage = () => {
+  const identity = useAuthStore(state => `${state.auth.user?.teamId ?? ''}:${state.auth.user?.id ?? ''}`);
+  return <MembersWorkspace key={identity} />;
+};
+
+const fetchAssessmentSummaries = (signal: AbortSignal) => getAssessmentMemberSummaries(signal);
+
+const MembersWorkspace = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -142,6 +153,13 @@ export const MembersPage = () => {
     initialData: [] as TeamWeeklyStatItem[]
   });
   const loadError = error ? getApiErrorMessage(error, '加载成员统计失败') : null;
+  const { data: assessment, loading: assessmentLoading, error: assessmentError, refresh: refreshAssessment } = useAsyncData(
+    fetchAssessmentSummaries, [], { initialData: null as AssessmentMemberSummaries | null }
+  );
+  const [selectedAssessment, setSelectedAssessment] = useState<{ memberKey: string; displayName: string } | null>(null);
+  const failedCounts = useMemo(() => new Map(assessment?.items.map(item => [item.memberKey, item.failedWeeksCount]) ?? []), [assessment]);
+  const requiredYears = assessment?.requiredEnrollYears ?? [];
+  const requiresAssessment = (member: TeamWeeklyStatItem) => requiredYears.includes(member.enrollYear);
 
   const enrollYearOptions = useMemo(
     () => [...new Set(members.map((member) => member.enrollYear))].filter(Boolean).sort((left, right) => right - left),
@@ -274,32 +292,56 @@ export const MembersPage = () => {
     {
       key: 'enrollYear',
       header: <span className="normal-case tracking-normal">成员年级</span>,
-      headerClassName: 'normal-case tracking-normal',
-      render: (value) => <span className="font-medium text-gray-700">{value ? `${value} 级` : '-'}</span>
+      headerClassName: 'whitespace-nowrap normal-case tracking-normal',
+      render: (value) => <span className="whitespace-nowrap font-medium text-gray-700">{value ? `${value} 级` : '-'}</span>
     },
     {
       key: 'totalDurationSeconds',
       header: renderSortHeader('打卡时长', 'duration'),
       headerClassName: 'normal-case tracking-normal',
-      cellClassName: 'font-mono text-base font-bold text-gray-800',
-      render: (value) => formatDuration(value)
+      cellClassName: 'whitespace-nowrap font-mono text-base font-bold text-gray-800',
+      render: (value) => formatComprehensiveDuration(value)
     },
     {
       key: 'sessionsCount',
       header: renderSortHeader('打卡次数', 'count'),
       headerClassName: 'normal-case tracking-normal',
+      cellClassName: 'whitespace-nowrap',
       render: (value) => `${value} 次`
+    },
+    {
+      key: '_weeklyAssessment',
+      header: <span className="whitespace-nowrap normal-case tracking-normal">本周考核</span>,
+      render: (_, row) => !assessment ? <span className="text-xs text-gray-500">{assessmentError ? '考核范围不可用' : '读取中…'}</span> : requiresAssessment(row) ? <MemberWeeklyAssessmentBadge member={row} /> : <span aria-label="非应考年级" className="text-gray-400">—</span>
+    },
+    {
+      key: '_assessmentHistory',
+      header: <span className="whitespace-nowrap normal-case tracking-normal">历史考核</span>,
+      cellClassName: 'whitespace-nowrap',
+      render: (_, row) => {
+        if (!assessment) return <span className="text-xs text-gray-500">{assessmentError ? '历史状态不可用' : '读取中…'}</span>;
+        if (!requiresAssessment(row)) return <span aria-label="非应考年级" className="text-gray-400">—</span>;
+        if (assessmentLoading) return <span className="text-xs text-gray-500">读取中…</span>;
+        if (assessmentError) return <span className="text-xs text-gray-500">历史状态不可用</span>;
+        if (!assessment?.enabled) return <span className="text-xs text-gray-500">尚未启用</span>;
+        const count = failedCounts.get(row.memberKey);
+        if (count === undefined) return <span className="text-xs text-gray-500">历史状态待核实</span>;
+        return <button type="button" className={`rounded-lg px-2 py-1 text-xs underline underline-offset-4 focus-visible:outline focus-visible:outline-2 ${count > 0 ? 'text-red-700 hover:bg-red-50' : 'text-gray-500 hover:bg-gray-100'}`}
+          onClick={() => setSelectedAssessment({ memberKey: row.memberKey, displayName: formatMemberName(row) })}>
+          打卡考核未通过 {count} 次
+        </button>;
+      }
     },
     {
       key: '_action',
       header: <span className="normal-case tracking-normal" />,
       headerClassName: 'text-right normal-case tracking-normal',
-      cellClassName: 'text-right',
+      cellClassName: 'whitespace-nowrap text-right',
       render: (_, row) => (
         <Button
           variant="ghost"
           size="sm"
-          className="text-blue-600 hover:bg-blue-50 hover:text-blue-800"
+          className="whitespace-nowrap text-blue-600 hover:bg-blue-50 hover:text-blue-800"
           onClick={(event) => {
             event.stopPropagation();
             navigate(`/members/${row.memberKey}/records`, {
@@ -460,6 +502,13 @@ export const MembersPage = () => {
               <Badge variant="gray">{scopeLabel}</Badge>
             </div>
 
+            <div className="border-b border-gray-100 px-6 py-3 text-xs leading-6 text-gray-500">
+              <p>当前应考年级：{requiredYears.length ? requiredYears.map(year => `${year} 级`).join('、') : '读取中／待核实'}（最新两届）。团队实际加入新一届成员后才切换，不按日期自动换届。</p>
+              <p>应考成员按综合时长显示灰／绿状态；高年级不显示考核标签，也不新增未通过记录。点击未通过次数可查看对应周日。</p>
+              {assessment?.enabled && <p>从 {assessment.startWeek} 起算；首次登记当周免考，停用周豁免。周日结束后保留五小时结算窗口，过去周不追罚。</p>}
+              {Boolean(assessmentError) && <div role="alert" className="mt-2 text-red-700">历史考核读取失败，未通过次数暂不可用。<button type="button" className="ml-2 underline underline-offset-4" onClick={refreshAssessment}>重试历史考核</button></div>}
+            </div>
+
             <DataTable
               columns={columns}
               data={tableData}
@@ -470,6 +519,7 @@ export const MembersPage = () => {
           </PageSection>
         </div>
       )}
+      {selectedAssessment && <AssessmentHistoryDialog key={selectedAssessment.memberKey} memberKey={selectedAssessment.memberKey} displayName={selectedAssessment.displayName} onClose={() => setSelectedAssessment(null)} />}
     </div>
   );
 };

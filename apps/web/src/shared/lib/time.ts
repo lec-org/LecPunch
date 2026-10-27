@@ -1,3 +1,7 @@
+/** Comprehensive weekly time may be negative; raw session formatting stays unchanged. */
+export const formatComprehensiveDuration = (seconds: number) =>
+  `${seconds < 0 ? '−' : ''}${formatDuration(Math.abs(seconds))}`;
+
 export const formatDuration = (seconds: number) => {
   const clamped = Math.max(seconds, 0);
   const hours = Math.floor(clamped / 3600)

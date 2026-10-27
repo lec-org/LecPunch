@@ -10,9 +10,14 @@ export interface WeeklyStatItem {
   adjustmentsCount: number;
   sessionsCount: number;
   weeklyGoalSeconds: number;
+  /** Signed card effects, separate from immutable attendance and admin adjustments. */
+  entertainmentSeconds?: number;
+  /** Based on settled comprehensive time; active sessions do not count until checkout. */
+  assessmentComplete?: boolean;
 }
 
 export interface TeamWeeklyStatItem extends WeeklyStatItem {
+  rank?: number;
   memberKey: string;
   displayName: string;
   username?: string;

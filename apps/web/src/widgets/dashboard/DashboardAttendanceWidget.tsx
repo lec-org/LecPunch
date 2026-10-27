@@ -3,7 +3,7 @@ import { AlertTriangle, History, Play, Square } from 'lucide-react';
 import { ATTENDANCE_MAX_SECONDS } from '@lecpunch/shared';
 import { Progress } from '@lecpunch/ui';
 import { useDashboardContext } from '@/features/dashboard/context/DashboardContext';
-import { formatDuration } from '@/shared/lib/time';
+import { formatDuration, formatComprehensiveDuration } from '@/shared/lib/time';
 
 const DashboardAttendanceWidgetComponent = () => {
   const {
@@ -15,6 +15,7 @@ const DashboardAttendanceWidgetComponent = () => {
     selectedWeekDuration,
     selectedWeekRecordedDuration,
     selectedWeekManualAdjustment,
+    selectedWeekEntertainment = 0,
     selectedWeekAdjustmentsCount,
     selectedWeekSessionsCount,
     weeklyGoalSeconds,
@@ -25,9 +26,9 @@ const DashboardAttendanceWidgetComponent = () => {
   } = useDashboardContext();
 
   const spotlightSeconds = isCurrentWeek ? currentDuration : selectedWeekDuration;
-  const completedSeconds = selectedWeekDuration + (isCurrentWeek && isCheckedIn ? currentDuration : 0);
+  const completedSeconds = selectedWeekDuration;
   const progressPercent = Math.min((currentDuration / ATTENDANCE_MAX_SECONDS) * 100, 100);
-  const goalPercent = weeklyGoalSeconds > 0 ? Math.min((completedSeconds / weeklyGoalSeconds) * 100, 100) : 0;
+  const goalPercent = weeklyGoalSeconds > 0 ? Math.max(0, Math.min((completedSeconds / weeklyGoalSeconds) * 100, 100)) : 0;
   const goalHours = weeklyGoalSeconds / 3600;
   const remainingSeconds = Math.max(weeklyGoalSeconds - completedSeconds, 0);
   const remainingHours = Math.floor(remainingSeconds / 3600);
@@ -59,14 +60,14 @@ const DashboardAttendanceWidgetComponent = () => {
                 : 'text-gray-300'
           }`}
         >
-          {formatDuration(spotlightSeconds)}
+          {formatComprehensiveDuration(spotlightSeconds)}
         </div>
 
         <div className="mb-4 flex flex-wrap gap-3 text-sm">
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
-            <p className="text-xs text-gray-500">{weekLabel}调整后累计</p>
+            <p className="text-xs text-gray-500">{weekLabel}综合时长</p>
             <p className="mt-1 font-mono text-lg font-semibold text-gray-900">
-              {formatDuration(selectedWeekDuration)}
+              {formatComprehensiveDuration(selectedWeekDuration)}
             </p>
           </div>
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
@@ -74,6 +75,11 @@ const DashboardAttendanceWidgetComponent = () => {
             <p className="mt-1 text-lg font-semibold text-gray-900">{selectedWeekSessionsCount} 次</p>
           </div>
         </div>
+
+        <p className="mb-3 text-xs text-gray-500">
+          综合时长包含考勤与卡牌娱乐时长（{formatComprehensiveDuration(selectedWeekEntertainment)}）。
+          进行中的打卡在有效签退后计入考核。
+        </p>
 
         {selectedWeekAdjustmentsCount > 0 ? (
           <p className="mb-4 text-xs text-slate-500">
@@ -100,7 +106,7 @@ const DashboardAttendanceWidgetComponent = () => {
               variant={reachedGoal ? 'default' : goalPercent >= 80 ? 'warning' : 'default'}
             />
             <p className="mt-1.5 text-xs text-gray-400">
-              已完成 {formatDuration(completedSeconds)} / {goalHours}h
+              已完成 {formatComprehensiveDuration(completedSeconds)} / {goalHours}h
             </p>
           </div>
         ) : null}

@@ -13,7 +13,7 @@ import {
 import { getMemberWeeklyStats, type MemberWeeklyStatsResponse } from '@/features/stats/stats.api';
 import { useAsyncData } from '@/shared/hooks/useAsyncData';
 import { getApiErrorMessage } from '@/shared/lib/api-error';
-import { formatDateTime, formatDuration } from '@/shared/lib/time';
+import { formatDateTime, formatComprehensiveDuration, formatDuration } from '@/shared/lib/time';
 import { DateRangePicker } from '@/shared/ui/DateRangePicker';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
@@ -303,7 +303,7 @@ export const MemberRecordsPage = () => {
               <div className="text-sm">
                 <span className="text-gray-500">有效累计时长：</span>
                 <span className="font-mono text-base font-bold text-blue-600">
-                  {formatDuration(latestStat.totalDurationSeconds)}
+                  {formatComprehensiveDuration(latestStat.totalDurationSeconds)}
                 </span>
               </div>
               <div className="text-sm">

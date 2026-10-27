@@ -14,6 +14,7 @@ export interface DashboardContextValue {
   selectedWeekDuration: number;
   selectedWeekRecordedDuration: number;
   selectedWeekManualAdjustment: number;
+  selectedWeekEntertainment?: number;
   selectedWeekAdjustmentsCount: number;
   selectedWeekSessionsCount: number;
   weeklyGoalSeconds: number;

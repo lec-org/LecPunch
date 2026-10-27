@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Clock, LayoutDashboard, Users, History, CalendarDays, CalendarClock, WalletCards, LogOut, Shield, Wifi, Download, UserCheck } from 'lucide-react';
+import { Clock, LayoutDashboard, Users, History, CalendarDays, CalendarClock, WalletCards, LogOut, Shield, Wifi, Download, UserCheck, TimerReset, Inbox, Megaphone, Layers3 } from 'lucide-react';
 import { Button } from '@lecpunch/ui';
 import { useAuthStore } from '../store/auth-store';
 import { signOut } from '@/shared/auth/logto';
@@ -11,7 +11,14 @@ const navItems = [
   { label: '团队活动', to: '/events', icon: CalendarClock },
   { label: '团队成员', to: '/members', icon: Users },
   { label: '我的记录', to: '/records', icon: History },
-  { label: '周历史', to: '/weekly-history', icon: CalendarDays }
+  { label: '周历史', to: '/weekly-history', icon: CalendarDays },
+  { label: '积分与卡牌', to: '/cards', icon: Layers3 }
+];
+
+const adminFeatureItems = [
+  { label: '增减时长', to: '/admin/duration-adjustments', icon: TimerReset },
+  { label: '成员消息收件箱', to: '/admin/messages', icon: Inbox },
+  { label: '发布通知与已读状态', to: '/admin/notices', icon: Megaphone }
 ];
 
 export const Sidebar = () => {
@@ -53,9 +60,11 @@ export const Sidebar = () => {
 
         {user?.role === 'admin' ? (
           <>
-            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/duration-adjustments">增减时长</NavLink>
-            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/messages">成员消息收件箱</NavLink>
-            <NavLink className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" to="/admin/notices">发布通知与已读状态</NavLink>
+            {adminFeatureItems.map(item => <NavLink key={item.to} to={item.to}
+              className={({ isActive }) => `w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
+              <item.icon className="w-5 h-5 mr-3 flex-shrink-0" aria-hidden="true" />
+              {item.label}
+            </NavLink>)}
             <div className="mt-6 mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">管理</div>
             <NavLink
               to="/admin"

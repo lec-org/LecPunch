@@ -1,0 +1,10 @@
+.draw-presentation{position:relative;isolation:isolate;overflow:hidden;min-height:200px}
+.draw-white-wash{position:absolute;inset:0;z-index:20;pointer-events:none;background:radial-gradient(ellipse at 50% 45%,#fff 25%,#fffdf6 65%,#f8fafc);animation:lec-draw-white-wash 1200ms ease-in-out both}
+.draw-card-art{overflow:hidden;border-radius:12px;background:#000;filter:brightness(0)}
+.draw-card-art.is-ready{animation:lec-draw-card-light 1000ms cubic-bezier(.16,1,.3,1) both;animation-delay:calc(160ms + var(--reward-index,0) * 100ms)}
+.draw-card-art.is-instant{filter:none;animation:none}
+.draw-reward-enter{animation:lec-draw-card-arrive 850ms cubic-bezier(.16,1,.3,1) both;animation-delay:calc(var(--reward-index,0) * 100ms)}
+@keyframes lec-draw-white-wash{0%{opacity:0}20%,34%{opacity:1}100%{opacity:0}}
+@keyframes lec-draw-card-light{0%{filter:brightness(0) saturate(.15)}60%{filter:brightness(.75) saturate(.8)}100%{filter:brightness(1) saturate(1)}}
+@keyframes lec-draw-card-arrive{from{opacity:0;transform:translateY(18px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){.draw-white-wash{display:none}.draw-card-art,.draw-card-art.is-ready{filter:none;animation:none}.draw-reward-enter{animation:none}}

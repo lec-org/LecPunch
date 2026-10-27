@@ -3,7 +3,7 @@ import { memo } from 'react';
 import { Users } from 'lucide-react';
 import { Avatar, Badge, Button } from '@lecpunch/ui';
 import { useDashboardContext } from '@/features/dashboard/context/DashboardContext';
-import { formatDuration } from '@/shared/lib/time';
+import { formatComprehensiveDuration } from '@/shared/lib/time';
 import { PageSection } from '@/shared/ui/PageSection';
 import { PageState } from '@/shared/ui/PageState';
 
@@ -15,7 +15,7 @@ const DashboardTeamWidgetComponent = () => {
         <div>
           <h3 className="flex items-center font-bold text-gray-800">
             <Users className="mr-2 h-5 w-5 text-blue-600" />
-            同年级排行
+            同年级综合时长排行
           </h3>
         </div>
         <Badge variant={isCurrentWeek ? 'info' : 'gray'}>{isCurrentWeek ? '本周' : '固定为本周'}</Badge>
@@ -47,11 +47,14 @@ const DashboardTeamWidgetComponent = () => {
                       <span className="truncate">{formatMemberName(member)}</span>
                       {member.adjustmentsCount > 0 ? <Badge variant="warning">含调整</Badge> : null}
                     </div>
-                    <div className="mt-0.5 text-xs text-gray-500">周累计：{formatDuration(member.totalDurationSeconds)}</div>
+                    <div className="mt-0.5 text-xs text-gray-500">综合时长：{formatComprehensiveDuration(member.totalDurationSeconds)}</div>
+                    {member.assessmentComplete !== undefined ? <span className={`mt-1 inline-block rounded px-2 py-0.5 text-xs ${member.assessmentComplete ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                      {member.assessmentComplete ? '✓ 本周已完成' : '○ 本周未完成'}
+                    </span> : null}
                   </div>
                   <div className="flex-shrink-0 text-right">
                     <div className="rounded-md bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600">
-                      {member.sessionsCount} 次
+                      {member.rank ? `第 ${member.rank} 名` : `${member.sessionsCount} 次`}
                     </div>
                   </div>
                 </div>
