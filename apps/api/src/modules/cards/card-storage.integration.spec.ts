@@ -10,6 +10,9 @@ import { CardActionArchiveSchema, CardWeekArchiveSchema } from './schemas/card-a
 import { UserSchema } from '../users/schemas/user.schema';
 import { AttendanceSessionSchema } from '../attendance/schemas/attendance-session.schema';
 import { PointLedgerEntrySchema } from '../points/schemas/point-ledger-entry.schema';
+import { PointsService } from '../points/points.service';
+import { AttendanceDurationAdjustmentSchema } from '../attendance/schemas/attendance-duration-adjustment.schema';
+import { AttendanceAdjustmentBucketSchema } from '../attendance/schemas/attendance-adjustment-bucket.schema';
 import { CardStorageService } from './card-storage.service';
 import { CardsService } from './cards.service';
 import type { AuthUser } from '../auth/types/auth-user.type';
@@ -21,6 +24,7 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
   let connection: Connection;
   let games: Model<any>, receipts: Model<any>, weeks: Model<any>, users: Model<any>, attendance: Model<any>, ledger: Model<any>, assessmentWeeks: Model<any>;
   let service: CardsService;
+  let legacyAdjustments: Model<any>, adjustmentBuckets: Model<any>;
   const actor: AuthUser = { userId: '6a0000000000000000000011', teamId: '6a0000000000000000000001', username: 'test.cards', displayName: 'Cards', role: 'member', enrollYear: 2026 };
   beforeAll(async () => {
     connection = await createConnection(uri!, { dbName: `lecpunch_local_cards_${randomUUID().replace(/-/g, '')}` }).asPromise();
@@ -31,14 +35,29 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     attendance = connection.model('AttendanceSession', AttendanceSessionSchema);
     ledger = connection.model('PointLedgerEntry', PointLedgerEntrySchema);
     assessmentWeeks = connection.model('AssessmentWeek', AssessmentWeekSchema);
+    legacyAdjustments = connection.model('AttendanceDurationAdjustment', AttendanceDurationAdjustmentSchema);
+    adjustmentBuckets = connection.model('AttendanceAdjustmentBucket', AttendanceAdjustmentBucketSchema);
     await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks].map(model => model.init()));
     const storage = new CardStorageService(games, receipts, weeks);
-    service = new CardsService(games, users, ledger, attendance, new ConfigService({ AUTH_SECRET: 'isolated-local-integration-key' }), storage);
+    await Promise.all([legacyAdjustments.init(), adjustmentBuckets.init()]);
+    service = new CardsService(games, users, new PointsService(ledger, legacyAdjustments, adjustmentBuckets), attendance, new ConfigService({ AUTH_SECRET: 'isolated-local-integration-key' }), storage);
   });
   beforeEach(async () => {
     vi.restoreAllMocks();
-    await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks].map(model => model.deleteMany({})));
+    await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks, legacyAdjustments, adjustmentBuckets].map(model => model.deleteMany({})));
     await users.create({ _id: actor.userId, teamId: actor.teamId, username: actor.username, displayName: actor.displayName, enrollYear: actor.enrollYear });
+  });
+  it('spends existing manual-adjustment earnings without attendance or a point-ledger migration', async () => {
+    const { getWeekKey } = await import('../../common/utils/time.util');
+    const weekKey = getWeekKey(new Date());
+    await adjustmentBuckets.create({ teamId: actor.teamId, userId: actor.userId, weekKey, entries: [{ signedDurationSeconds: 7200 }] });
+    const before = await service.getMe(actor);
+    expect(before.points.earned).toBe(120);
+    for (let i = 0; i < 4; i++) await service.action(actor, { requestKey: randomUUID(), action: 'draw' });
+    expect((await service.getMe(actor)).points).toMatchObject({ earned: 120, spent: 120, balance: 0 });
+    expect(await ledger.countDocuments()).toBe(0);
+    await adjustmentBuckets.updateOne({ teamId: actor.teamId, userId: actor.userId, weekKey }, { $push: { entries: { signedDurationSeconds: -3600 } } });
+    expect((await service.getMe(actor)).points.balance).toBe(0);
   });
   afterAll(async () => {
     vi.restoreAllMocks();

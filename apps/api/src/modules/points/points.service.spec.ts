@@ -5,11 +5,45 @@ describe('PointsService', () => {
   const findOneAndUpdate = vi.fn();
   const aggregate = vi.fn();
   const pointLedgerModel = { findOneAndUpdate, aggregate } as any;
+  const legacyAggregate = vi.fn(), bucketAggregate = vi.fn();
   let service: PointsService;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new PointsService(pointLedgerModel);
+    legacyAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
+    bucketAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
+    service = new PointsService(pointLedgerModel, { aggregate: legacyAggregate } as any, { aggregate: bucketAggregate } as any);
+  });
+
+  it('counts existing current-week additions without checkout or a second credit write', async () => {
+    aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([]) });
+    bucketAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ _id: { userId: 'user-1', weekKey: '2026-10-26' }, seconds: 7200 }]) });
+    expect(await service.getTeamWeekEarnedPoints('team-1', '2026-10-26')).toEqual({ 'user-1': 120 });
+    expect(await service.getTeamWeekEarnedPoints('team-1', '2026-10-26')).toEqual({ 'user-1': 120 });
+    expect(findOneAndUpdate).not.toHaveBeenCalled();
+    expect(bucketAggregate.mock.calls[0][0][0]).toEqual({ $match: { teamId: 'team-1', weekKey: '2026-10-26' } });
+  });
+
+  it('nets legacy and bucket seconds before rounding, supports deductions, and isolates users', async () => {
+    aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ _id: 'user-1', points: 60 }]) });
+    legacyAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ _id: { userId: 'user-1', weekKey: '2026-10-26' }, seconds: 59 }]) });
+    bucketAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([
+      { _id: { userId: 'user-1', weekKey: '2026-10-26' }, seconds: -3659 },
+      { _id: { userId: 'user-2', weekKey: '2026-10-26' }, seconds: 119 }
+    ]) });
+    expect(await service.getTeamWeekEarnedPoints('team-1', '2026-10-26')).toEqual({ 'user-1': 0, 'user-2': 1 });
+    expect(aggregate.mock.calls[0][0][0]).toEqual({ $match: { teamId: 'team-1', weekKey: '2026-10-26', sourceType: 'attendance' } });
+  });
+
+  it('updates the compatible points endpoint while keeping historical adjustments out of this week', async () => {
+    aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalPoints: 0 }]) });
+    bucketAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([
+      { _id: { userId: 'user-1', weekKey: '2026-10-26' }, seconds: 3600 },
+      { _id: { userId: 'user-1', weekKey: '2026-10-19' }, seconds: 7200 }
+    ]) });
+    expect(await service.getMyPoints({ teamId: 'team-1', userId: 'user-1' } as any, '2026-W44'))
+      .toMatchObject({ totalPoints: 180, weekPoints: 60 });
+    expect(legacyAggregate.mock.calls[0][0][0]).toEqual({ $match: { teamId: 'team-1', userId: 'user-1' } });
   });
 
   it('awards one point for each fully completed attendance minute', async () => {

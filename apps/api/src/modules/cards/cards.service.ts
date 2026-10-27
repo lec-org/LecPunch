@@ -10,7 +10,7 @@ import { getWeekKey } from '../../common/utils/time.util';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { AttendanceSession, AttendanceSessionDocument } from '../attendance/schemas/attendance-session.schema';
-import { PointLedgerEntry, PointLedgerEntryDocument } from '../points/schemas/point-ledger-entry.schema';
+import { PointsService } from '../points/points.service';
 import { CardGame, CardGameDocument, type CardActionReceipt } from './schemas/card-game.schema';
 import { CARD_CATALOG } from './card-catalog';
 import { advanceGameState, applyGameAction, getPlayerWeek, type GameContext } from './card-engine';
@@ -34,7 +34,7 @@ export class CardsService {
   constructor(
     @InjectModel(CardGame.name) private readonly games: Model<CardGameDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
-    @InjectModel(PointLedgerEntry.name) private readonly ledger: Model<PointLedgerEntryDocument>,
+    private readonly points: PointsService,
     @InjectModel(AttendanceSession.name) private readonly attendance: Model<AttendanceSessionDocument>,
     private readonly config: ConfigService,
     private readonly storage: CardStorageService
@@ -50,16 +50,13 @@ export class CardsService {
     }
     const [members, earned, sessions] = await Promise.all([
       this.users.find({ teamId, status: 'active' }).lean().exec(),
-      this.ledger.aggregate<{ _id: string; points: number }>([
-        { $match: { teamId, weekKey: week, sourceType: 'attendance' } },
-        { $group: { _id: '$userId', points: { $sum: '$points' } } }
-      ]).exec(),
+      this.points.getTeamWeekEarnedPoints(teamId, week),
       this.attendance.find({ teamId, weekKey: { $in: [...sessionWeeks] }, status: 'completed', durationSeconds: { $gt: 0, $lt: 18000 } })
         .select('_id userId weekKey checkOutAt durationSeconds').lean().exec()
     ]);
     return { now, week, random,
       players: members.map(member => ({ id: String(member._id), username: member.username, name: member.displayName, enrollYear: member.enrollYear })),
-      earnedPoints: Object.fromEntries(earned.map(row => [row._id, Math.max(0, row.points)])),
+      earnedPoints: earned,
       sessions: sessions.filter(session => session.checkOutAt).map(session => ({ id: String(session._id), userId: session.userId, weekKey: session.weekKey, checkOutAt: new Date(session.checkOutAt!).getTime(), durationSeconds: session.durationSeconds! }))
     };
   }

@@ -58,15 +58,15 @@ function fixture() {
   };
   const members = [{ _id: actor.userId, username: actor.username, displayName: actor.displayName, enrollYear: 2025 }];
   const users = { find: () => query(() => members) };
-  const ledger = { aggregate: () => query(() => [{ _id: actor.userId, points: 60 }]) };
+  const points = { getTeamWeekEarnedPoints: vi.fn(async () => ({ [actor.userId]: 60 })) };
   let attendanceRows: any[] = [];
   let attendanceFilter: any;
   const attendance = { find: (filter: any) => { attendanceFilter = filter; return query(() => attendanceRows.filter(row => filter.weekKey.$in.includes(row.weekKey))); } };
   const config = new ConfigService({ AUTH_SECRET: 'local-test-signing-key-of-sufficient-length' });
   const receipts = archiveModel(['teamId', 'receiptKey']), weeks = archiveModel(['teamId', 'userId', 'weekKey']);
   const storage = new CardStorageService(games as any, receipts.model, weeks.model);
-  const service = new CardsService(games as any, users as any, ledger as any, attendance as any, config, storage);
-  return { service, storage, games, receipts, weeks, document: () => document, members,
+  const service = new CardsService(games as any, users as any, points as any, attendance as any, config, storage);
+  return { service, storage, games, receipts, weeks, points, document: () => document, members,
     setAttendance: (rows: any[]) => { attendanceRows = rows; }, attendanceFilter: () => attendanceFilter };
 }
 
@@ -74,6 +74,22 @@ describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it('uses adjusted earnings for paid draws and retains spent points after a deduction', async () => {
+    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 120 });
+    const first = await f.service.getMe(actor);
+    f.document().state.members[actor.userId].weeks[first.week].freeUsed = 2;
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    const drawn = await f.service.action(actor, input);
+    expect(drawn.state.points).toMatchObject({ earned: 120, spent: 60, balance: 60 });
+    expect((await f.service.action(actor, input)).state.points.spent).toBe(60);
+    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 30 });
+    expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 30, spent: 60, balance: 0 });
+    await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('积分不足');
+    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 120 });
+    expect((await f.service.getMe(actor)).points.balance).toBe(60);
+    expect(f.points.getTeamWeekEarnedPoints).toHaveBeenCalledWith(actor.teamId, first.week);
+  });
 
   it.each(['2026-10-25T16:01:00Z', '2026-10-25T22:01:00Z'])('reconciles previous-week acceleration before reading or archiving at %s', async now => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now));
