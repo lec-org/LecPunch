@@ -21,6 +21,129 @@ function use(state: GameState, context: GameContext, cardId: string, targetId?: 
 }
 
 describe('card collection and economy', () => {
+  it.each(['n-shield','r-blade','sr-reflect'] as const)('self gamble uses only applicable defense %s, even with an active ward', defense => {
+    for(const losing of [false,true]) {
+      const {state,context}=fixture();context.random=()=>losing?0:0.5;
+      getPlayerWeek(state,a,context.week).immuneUntil=context.now+86400000;own(state,a,defense);
+      const result=use(state,context,'n-gamble');
+      const blocked=losing && defense!=='sr-reflect';
+      expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(losing?blocked?0:-1800:1800);
+      expect(state.members[a].inventory[defense]).toBe(blocked?0:1);
+      expect(result.defenses?.length??0).toBe(blocked?1:0);
+      expect(state.members[a].inventory['n-gamble']).toBe(0);
+    }
+  });
+  it.each(['r-steal','r-thief'] as const)('%s cannot create a credit when a reflected debit is blocked by the caster blade', card => {
+    const {state,context}=fixture();context.baseSeconds[a]=0;own(state,a,'r-blade');
+    own(state,card==='r-steal'?b:c,'sr-reflect');
+    use(state,context,card,b);
+    expect([a,b,c].map(id=>getPlayerWeek(state,id,context.week).entertainmentSeconds)).toEqual([0,0,0]);
+    expect(state.members[a].inventory['r-blade']).toBe(0);
+  });
+  it('a transferred gain reaches a warded linked member while the copied loss is blocked', () => {
+    const {state,context}=fixture();getPlayerWeek(state,b,context.week).immuneUntil=context.now+86400000;
+    use(state,context,'sr-chain',b,c);
+    use(state,context,'r-thief',b);
+    expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-1800);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);
+    expect(state.links).toEqual([]);
+  });
+  it('rejects a mixed ten draw atomically until the negative balance is repaid and all fees are covered', () => {
+    const {state,context}=fixture();context.baseSeconds[a]=0;
+    const week=getPlayerWeek(state,a,context.week);Object.assign(week,{entertainmentSeconds:-1800,bonusDraws:7});
+    const before=structuredClone(state);
+    expect(()=>applyGameAction(state,a,{action:'draw',count:10},context)).toThrow('积分不足');
+    expect(state).toEqual(before);
+    use(state,context,'r-add');use(state,context,'r-add');use(state,context,'r-add');
+    expect(weeklyDrawPoints(0,getPlayerWeek(state,a,context.week).entertainmentSeconds,0).balance).toBe(60);
+    const result=applyGameAction(state,a,{action:'draw',count:10},context);
+    expect(result.gainedCardIds).toHaveLength(10);
+    expect(getPlayerWeek(state,a,context.week)).toMatchObject({spentPoints:60,freeUsed:2,bonusDraws:0});
+  });
+  it('a shield acquired by a paid ten draw immediately defends a subsequent attack', () => {
+    const {state,context}=fixture();getPlayerWeek(state,a,context.week).freeUsed=2;
+    let calls=0;context.random=()=>calls++%2===0?0:0.99;
+    const draw=applyGameAction(state,a,{action:'draw',count:10},context);
+    expect(draw.gainedCardIds).toEqual(Array(10).fill('n-shield'));
+    own(state,b,'n-reduce');context.random=()=>0;
+    const attack=applyGameAction(state,b,{action:'use',cardId:'n-reduce'},context);
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,a,context.week).spentPoints).toBe(600);
+    expect(state.members[a].inventory['n-shield']).toBe(9);
+    expect(attack.defenses).toEqual([expect.objectContaining({userId:a,defenseCardId:'n-shield',outcome:'blocked'})]);
+  });
+  it.each([0, 0.499999, 0.5, 0.999999])('gamble applies exactly one signed 30-minute outcome at roll %s', roll => {
+    const {state,context}=fixture();context.baseSeconds[a]=0;context.random=()=>roll;
+    const result=use(state,context,'n-gamble');
+    const seconds=roll<0.5 ? -1800 : 1800;
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(seconds);
+    expect(state.members[a].inventory['n-gamble']).toBe(0);
+    expect(result.effects?.filter(effect=>effect.kind==='time')).toEqual([expect.objectContaining({targetId:a,deltaSeconds:seconds,outcome:'applied'})]);
+    expect(weeklyDrawPoints(0,seconds,0).balance).toBe(seconds/60);
+  });
+  it('allows free and gift-only draws in debt, but never permits paid debt spending', () => {
+    const {state,context}=fixture();context.baseSeconds[a]=-3600;
+    const week=getPlayerWeek(state,a,context.week);week.entertainmentSeconds=-1800;week.bonusDraws=8;
+    expect(weeklyDrawPoints(-3600,-1800,0).balance).toBe(-90);
+    const result=applyGameAction(state,a,{action:'draw',count:10},context);
+    expect(result.gainedCardIds).toHaveLength(10);
+    expect(getPlayerWeek(state,a,context.week)).toMatchObject({freeUsed:2,bonusDraws:0,spentPoints:0});
+    const before=structuredClone(state);
+    expect(()=>applyGameAction(state,a,{action:'draw'},context)).toThrow('积分不足');
+    expect(state).toEqual(before);
+    use(state,context,'r-add');expect(weeklyDrawPoints(-3600,getPlayerWeek(state,a,context.week).entertainmentSeconds,0).balance).toBe(-60);
+  });
+  it('a ward accepts angel, charity, transferred time and harvest without spending defenses', () => {
+    const {state,context}=fixture();getPlayerWeek(state,b,context.week).immuneUntil=context.now+86400000;
+    own(state,b,'n-shield');own(state,b,'r-blade');own(state,b,'sr-reflect');
+    use(state,context,'sr-angel');
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);
+    use(state,context,'r-charity');
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(3690);
+    use(state,context,'r-thief',b);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(5490);
+    use(state,context,'ssr-harvest');
+    expect(getPlayerWeek(state,b,context.week).bonusDraws).toBe(2);
+    expect(state.members[b].inventory).toMatchObject({'n-shield':1,'r-blade':1,'sr-reflect':1});
+  });
+  it('charity shares actual attendance even when card-only time is zero', () => {
+    const {state,context}=fixture();context.baseSeconds[a]=7200;
+    use(state,context,'r-charity');
+    expect([a,b,c].map(id=>getPlayerWeek(state,id,context.week).entertainmentSeconds)).toEqual([-720,360,360]);
+    expect(weeklyDrawPoints(7200,-720,0).balance).toBe(108);
+  });
+  it.each([0,-3600])('thief transfers 30 minutes from a donor with %s comprehensive seconds', base => {
+    const {state,context}=fixture();context.baseSeconds[c]=base;
+    use(state,context,'r-thief',b);
+    expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-1800);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);
+    expect(weeklyDrawPoints(base,-1800,0).balance).toBe(base/60-30);
+  });
+  it('arrows use comprehensive time and can push the selected member below zero', () => {
+    const {state,context}=fixture();context.baseSeconds[b]=7200;context.baseSeconds[c]=0;
+    use(state,context,'ssr-arrows',c);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-720);
+    expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-360);
+    expect(weeklyDrawPoints(0,-360,0).balance).toBe(-6);
+  });
+  it('a reflected thief transfer charges the caster, and a caster ward prevents any free credit', () => {
+    for (const ward of [false,true]) {
+      const {state,context}=fixture();context.baseSeconds[a]=0;own(state,c,'sr-reflect');
+      if(ward)getPlayerWeek(state,a,context.week).immuneUntil=context.now+86400000;
+      use(state,context,'r-thief',b);
+      expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(ward?0:-1800);
+      expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(ward?0:1800);
+      expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(0);
+    }
+  });
+  it('negative weekly time and points reset next week without rewriting the prior week', () => {
+    const {state,context}=fixture();context.baseSeconds[a]=0;
+    const previous=context.week;Object.assign(getPlayerWeek(state,a,previous),{entertainmentSeconds:-1800,spentPoints:60});
+    context.week='2026-11-02';context.now=Date.parse('2026-11-02T00:00:00Z');advanceGameState(state,context);
+    const current=getPlayerWeek(state,a,context.week);
+    expect(weeklyDrawPoints(0,current.entertainmentSeconds,current.spentPoints).balance).toBe(0);
+    expect(getPlayerWeek(state,a,previous)).toMatchObject({entertainmentSeconds:-1800,spentPoints:60});
+  });
   it('ignores legacy minted credits and derives payment from current net time', () => {
     const { state, context } = fixture(); context.baseSeconds[a] = 0;
     Object.assign(getPlayerWeek(state, a, context.week), { freeUsed: 2, mintedSeconds: 36000 });
@@ -276,6 +399,7 @@ describe('card application and defenses', () => {
   });
   it('charity shares with both assessment cohorts while angel and lightning keep same-grade scope', () => {
     const {state,context}=fixture();context.players.find(player=>player.id===b)!.enrollYear=2026;
+    context.baseSeconds[a]=0;
     getPlayerWeek(state,a,context.week).entertainmentSeconds=6000;
     use(state,context,'r-charity');
     expect([b,c,outsider].map(id=>getPlayerWeek(state,id,context.week).entertainmentSeconds)).toEqual([300,300,0]);
@@ -357,10 +481,11 @@ describe('card application and defenses', () => {
     use(state,context,'r-steal',b);expect(state.members[b].inventory['r-blade']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
     own(state,b,'n-shield');use(state,context,'r-steal',b);expect(state.members[b].inventory['n-shield']).toBe(1);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
   });
-  it('a harmless gamble does not spend defenses; harmful self gamble does', () => {
+  it('a winning gamble adds time without spending defenses; a losing gamble can be defended', () => {
     const {state,context}=fixture();own(state,a,'n-shield');context.random=()=>0.9;
     use(state,context,'n-gamble');expect(state.members[a].inventory['n-shield']).toBe(1);
-    context.random=()=>0;use(state,context,'n-gamble');expect(state.members[a].inventory['n-shield']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);
+    context.random=()=>0;use(state,context,'n-gamble');expect(state.members[a].inventory['n-shield']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);
   });
   it('red king bypasses lower-rarity defenses but can be reflected once', () => {
     const {state,context}=fixture();own(state,b,'n-shield');own(state,b,'r-blade');
@@ -423,9 +548,9 @@ describe('card application and defenses', () => {
     expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
     expect(getPlayerWeek(state,b,context.week).immuneUntil).toBe(until);
   });
-  it('immunity rejects other benefits/attacks but not self-cast effects', () => {
+  it('immunity accepts benefits and blocks external attacks without blocking self-cast effects', () => {
     const {state,context}=fixture();getPlayerWeek(state,b,context.week).immuneUntil=context.now+9999;
-    use(state,context,'r-add',b);use(state,context,'n-reduce');expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
+    use(state,context,'r-add',b);use(state,context,'n-reduce');expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);
     use(state,context,'ssr-invincible');use(state,context,'r-add',a);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);
   });
   it('lightning tests username order and stops at first true even when immune', () => {
@@ -445,6 +570,7 @@ describe('card application and defenses', () => {
   });
   it('charity and thief conserve entertainment and do not mint transfer points', () => {
     const {state,context}=fixture();getPlayerWeek(state,a,context.week).entertainmentSeconds=6000;
+    context.baseSeconds[a]=0;
     use(state,context,'r-charity');expect([a,b,c].map(id=>getPlayerWeek(state,id,context.week).entertainmentSeconds)).toEqual([5400,300,300]);
     getPlayerWeek(state,c,context.week).entertainmentSeconds=3600;use(state,context,'r-thief',b);
     expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(1800);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(2100);
@@ -452,6 +578,7 @@ describe('card application and defenses', () => {
   });
   it('a charity transfer debit triggers its one link without consuming the donor blade', () => {
     const {state,context}=fixture();getPlayerWeek(state,a,context.week).entertainmentSeconds=6000;own(state,a,'r-blade');
+    context.baseSeconds[a]=0;
     use(state,context,'sr-chain',a,b);use(state,context,'r-charity');
     expect(state.links).toEqual([]);expect(state.members[a].inventory['r-blade']).toBe(1);
     expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-300);expect(getPlayerWeek(state,b,context.week).mintedSeconds).toBe(0);
@@ -462,6 +589,7 @@ describe('card application and defenses', () => {
   });
   it('arrows percentage only uses positive balances and extra strike uses actual losses', () => {
     const {state,context}=fixture();getPlayerWeek(state,b,context.week).entertainmentSeconds=18000;getPlayerWeek(state,c,context.week).entertainmentSeconds=-100;
+    context.baseSeconds[b]=context.baseSeconds[c]=0;
     use(state,context,'ssr-arrows',c);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(17100);expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-550);
   });
   it('locks affect intended actions, expire, and passive defense remains automatic', () => {

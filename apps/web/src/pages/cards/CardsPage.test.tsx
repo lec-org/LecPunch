@@ -317,6 +317,26 @@ describe('CardsPage authenticated collection', () => {
     expect(screen.queryByText('加速')).not.toBeInTheDocument();
     expect(screen.getByText('−00:30:00')).toBeInTheDocument();
   });
+  it('shows signed points debt and keeps a free single draw enabled', async () => {
+    api.getCardGame.mockResolvedValue({ ...makeView(), freeRemaining: 1,
+      points: { rule: 'comprehensive-v1', comprehensiveSeconds: -1800, earned: -30, bonus: 0, spent: 60, balance: -90 } });
+    render(<CardsPage />);
+    expect(await screen.findByText('-90')).toHaveClass('text-red-700');
+    expect(screen.getByText(/当前欠额 90 积分/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /免费抽卡/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /十连抽/ })).toBeDisabled();
+    expect(screen.getByText('−00:30:00')).toBeInTheDocument();
+  });
+  it('allows a gift-only ten draw while points are negative', async () => {
+    api.getCardGame.mockResolvedValue({ ...makeView(), freeRemaining: 0, giftDraws: 10,
+      points: { earned: 0, bonus: 0, spent: 60, balance: -60 } });
+    const saved = acquired(); saved.result = { message: '十连抽成功', drawCount: 10, drawAnimation: 'blue', gainedCardIds: Array(10).fill('card-01') };
+    api.performCardAction.mockResolvedValue(saved);
+    render(<CardsPage />);
+    const button = await screen.findByRole('button', { name: '十连抽 · 无需积分' });
+    expect(button).toBeEnabled(); await userEvent.click(button);
+    expect(api.performCardAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'draw', count: 10 }));
+  });
   it('shows comprehensive time and quota rather than a separate positive card-income balance', async () => {
     api.getCardGame.mockResolvedValue({ ...makeView(), entertainmentSeconds: -1800,
       points: { rule: 'comprehensive-v1', comprehensiveSeconds: 5400, earned: 90, bonus: 0, spent: 60, balance: 30 } });

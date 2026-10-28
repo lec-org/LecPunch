@@ -143,9 +143,9 @@ describe('assessment finalization',()=>{
     expect(finalizeAssessmentWeek(state,afterWindow-1,{one:totals(0)}).outcomes.one.status).toBe('pending');
     expect(finalizeAssessmentWeek(state,afterWindow,{one:totals(0)}).outcomes.one.status).toBe('failed');
   });
-  it('clamps only raw+manual and keeps signed entertainment and comprehensive totals',()=>{
+  it('keeps signed manual adjustments, entertainment and comprehensive totals',()=>{
     const state=observedWeek();
-    expect(finalizeAssessmentWeek(state,afterWindow,{one:totals(1800,-3600,-900)}).outcomes.one).toMatchObject({status:'failed',rawSeconds:1800,manualSeconds:-3600,entertainmentSeconds:-900,comprehensiveSeconds:-900});
+    expect(finalizeAssessmentWeek(state,afterWindow,{one:totals(1800,-3600,-900)}).outcomes.one).toMatchObject({status:'failed',rawSeconds:1800,manualSeconds:-3600,entertainmentSeconds:-900,comprehensiveSeconds:-2700});
     expect(finalizeAssessmentWeek(state,afterWindow,{one:totals(1800,600,1200)}).outcomes.one).toMatchObject({status:'complete',comprehensiveSeconds:3600});
     expect(state.outcomes).toEqual({});
   });

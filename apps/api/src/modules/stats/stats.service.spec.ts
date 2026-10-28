@@ -26,7 +26,7 @@ describe('StatsService', () => {
     service = new StatsService(attendanceService as any, usersService as any);
   });
 
-  it('adds signed entertainment after clamping attendance and ranks equal totals together', async () => {
+  it('adds signed entertainment and ranks equal comprehensive totals together', async () => {
     aggregate.mockReturnValue({exec: vi.fn().mockResolvedValue([
       {_id: 'user-1', totalDurationSeconds: 600, sessionsCount: 1},
       {_id: 'user-2', totalDurationSeconds: 1200, sessionsCount: 3}
