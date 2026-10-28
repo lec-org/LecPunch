@@ -14,6 +14,8 @@ export class CardsController {
   @Get('me') me(@CurrentUser() user: AuthUser) { return this.cards.getMe(user); }
   @Post('actions') action(@CurrentUser() user: AuthUser, @Body() input: CardActionDto) { return this.cards.action(user, input); }
   @Post('gifts/ack') acknowledgeGifts(@CurrentUser() user: AuthUser, @Body() input: CardGiftsAckDto) { return this.cards.acknowledgeGifts(user, input.ids); }
+  @Post('defenses/ack') acknowledgeDefenses(@CurrentUser() user: AuthUser, @Body() input: CardGiftsAckDto) { return this.cards.acknowledgeDefenses(user, input.ids); }
+  @Post('interactions/ack') acknowledgeInteractions(@CurrentUser() user: AuthUser, @Body() input: CardGiftsAckDto) { return this.cards.acknowledgeInteractions(user, input.ids); }
   @Get('actions/:requestKey') status(@CurrentUser() user: AuthUser, @Param('requestKey') key: string) { return this.cards.actionStatus(user, key); }
   @Get('art/:cardId') async art(@CurrentUser() user: AuthUser, @Param('cardId') id: string, @Res() response: Response) {
     const file = await this.cards.artwork(user, id);

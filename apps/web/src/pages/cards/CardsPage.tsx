@@ -10,8 +10,11 @@ import { DrawAnimation } from '@/features/cards/DrawAnimation';
 import { CardDetailsDialog } from '@/features/cards/CardDetailsDialog';
 import { CardActionResultDialog } from '@/features/cards/CardActionResultDialog';
 import { CardGiftInboxDialog } from '@/features/cards/CardGiftInboxDialog';
+import { CardInteractionInboxDialog } from '@/features/cards/CardInteractionInboxDialog';
+import { CardDefenseInboxDialog } from '@/features/cards/CardDefenseInboxDialog';
 import { DrawRulesDialog } from '@/features/cards/DrawRulesDialog';
 import { useCardGame } from '@/features/cards/use-card-game';
+import { useCardLiveUpdates } from '@/features/cards/use-card-live-updates';
 import { formatComprehensiveDuration, formatDateTime } from '@/shared/lib/time';
 
 const rarities: CardRarity[] = ['N', 'R', 'SR', 'SSR'];
@@ -31,20 +34,37 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
   const game = useCardGame(identity);
   const [filter, setFilter] = useState<CardRarity | 'all'>('all'), [selectedId, setSelectedId] = useState('');
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [dismissedGifts, setDismissedGifts] = useState('');
+  const [dismissedGifts, setDismissedGifts] = useState<Set<string>>(() => new Set());
+  const [dismissedDefenses, setDismissedDefenses] = useState<Set<string>>(() => new Set());
+  const [dismissedInteractions, setDismissedInteractions] = useState<Set<string>>(() => new Set());
   const [mode, setMode] = useState<'use' | 'gift'>('use'), [targetId, setTargetId] = useState(''), [secondTargetId, setSecondTargetId] = useState('');
   const view = game.view;
   const tenFree = Math.min(10, view?.freeRemaining ?? 0);
   const tenGifts = Math.min(10 - tenFree, view?.giftDraws ?? 0);
   const tenCost = (10 - tenFree - tenGifts) * 60;
   const selected = game.actionReveal ? undefined : view?.collection.find(card => card.id === selectedId && card.unlocked);
-  const incomingGifts = view?.incomingGifts ?? [];
+  const incomingGifts = (view?.incomingGifts ?? []).filter(notice => !dismissedGifts.has(notice.id));
   const giftKey = incomingGifts.map(gift => gift.id).join(':');
-  const showGifts = Boolean(giftKey && giftKey !== dismissedGifts && !selected && !rulesOpen && !game.drawReveal && !game.actionReveal);
+  const incomingDefenses = (view?.incomingDefenses ?? []).filter(notice => !dismissedDefenses.has(notice.id));
+  const defenseKey = incomingDefenses.map(notice => notice.id).join(':');
+  const canShowInbox = !selected && !rulesOpen && !game.drawReveal && !game.actionReveal;
+  const showDefenses = Boolean(defenseKey && canShowInbox);
+  const incomingInteractions = (view?.incomingInteractions ?? []).filter(notice => !dismissedInteractions.has(notice.id));
+  const interactionKey = incomingInteractions.map(notice => notice.id).join(':');
+  const showInteractions = Boolean(interactionKey && canShowInbox && !showDefenses);
+  const showGifts = Boolean(giftKey && canShowInbox && !showDefenses && !showInteractions);
+  const dismissDefenses = () => setDismissedDefenses(previous => new Set([...previous, ...incomingDefenses.map(notice => notice.id)]));
+  const dismissInteractions = () => setDismissedInteractions(previous => new Set([...previous, ...incomingInteractions.map(notice => notice.id)]));
+  const dismissGifts = () => setDismissedGifts(previous => new Set([...previous, ...incomingGifts.map(notice => notice.id)]));
+  useCardLiveUpdates(game.refreshInBackground, game.busy || Boolean(game.pending) ||
+    !canShowInbox || showDefenses || showInteractions || showGifts, Boolean(view));
   const locked = Boolean(view && future(view.statuses.lockedUntil)), starved = Boolean(view && future(view.statuses.starvedUntil));
   const disabled = game.busy || Boolean(game.pending) || Boolean(game.drawReveal) || Boolean(game.actionReveal) || Boolean(view?.capacityLimited);
   const targetMode = mode === 'gift' ? 'other' : selected?.targetMode ?? 'none';
-  const targets = view?.players.filter(player => player.enrollYear === enrollYear && (targetMode === 'self-or-other' || targetMode === 'two' || player.id !== userId)) ?? [];
+  const assessmentScope = mode === 'use' && selected?.targetScope === 'assessment';
+  const targetScopeLabel = assessmentScope ? '当前应考成员' : '同年级成员';
+  const ownGrade = view?.players.find(player => player.id === userId)?.enrollYear ?? enrollYear;
+  const targets = view?.players.filter(player => (assessmentScope ? view.requiredEnrollYears?.includes(player.enrollYear) : player.enrollYear === ownGrade) && (targetMode === 'self-or-other' || targetMode === 'two' || player.id !== userId)) ?? [];
   const needsTarget = targetMode !== 'none';
   const validTargets = !needsTarget || Boolean(targets.some(player => player.id === targetId) && (targetMode !== 'two' || targets.some(player => player.id === secondTargetId) && targetId !== secondTargetId));
   const canAct = Boolean(selected && selected.quantity > 0 && validTargets && !disabled && (mode === 'gift' || selected.usable !== false && !locked));
@@ -59,6 +79,7 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
       <Button variant="outline" disabled={game.busy || game.loading || Boolean(game.drawReveal)} onClick={() => void game.refresh()}><RefreshCw className="h-4 w-4" aria-hidden="true" />{game.loading ? '正在刷新' : '刷新数据'}</Button>
     </header>
     {game.error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{game.error}</p>}
+    {game.syncError && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{game.syncError}</p>}
     {game.success && <p role="status" className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">{game.success}</p>}
     {view?.capacityLimited && <p role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">卡牌记录达到安全容量，暂时不能抽卡、使用或赠送卡片。现有图鉴和记录仍可查看，请联系维护者归档。</p>}
     {game.pending && <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3" aria-label="待确认操作">
@@ -116,16 +137,16 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
         {selected.quantity > 0 ? <div className="border-t border-gray-100 pt-4 space-y-4">
           <div className="flex gap-3"><button type="button" disabled={disabled} aria-pressed={mode === 'use'} className={`rounded-lg border px-4 py-2 text-sm ${mode === 'use' ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200'}`} onClick={() => { setMode('use'); setTargetId(''); setSecondTargetId(''); }}>使用卡片</button><button type="button" disabled={disabled} aria-pressed={mode === 'gift'} className={`rounded-lg border px-4 py-2 text-sm ${mode === 'gift' ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200'}`} onClick={() => { setMode('gift'); setTargetId(''); setSecondTargetId(''); }}>赠送卡片</button></div>
           {mode === 'use' && selected.usable === false ? <p className="text-sm text-gray-500">这是一张被动卡，持有时自动生效，无需主动使用。</p> : <>
-            {needsTarget && <label className="block text-sm">{targetMode === 'two' ? '第一位关联成员' : mode === 'gift' ? '赠送给' : '选择目标'}<select className="mt-2 block w-full max-w-md rounded-lg border border-gray-300 bg-white p-3" value={targetId} disabled={disabled} onChange={e => setTargetId(e.target.value)}><option value="">请选择同年级成员</option>{targets.map(player => <option key={player.id} value={player.id}>{player.displayName} · {player.username}{player.id === userId ? '（自己）' : ''}</option>)}</select></label>}
-            {targetMode === 'two' && <label className="block text-sm">第二位关联成员<select className="mt-2 block w-full max-w-md rounded-lg border border-gray-300 bg-white p-3" value={secondTargetId} disabled={disabled} onChange={e => setSecondTargetId(e.target.value)}><option value="">请选择另一位成员</option>{targets.filter(player => player.id !== targetId).map(player => <option key={player.id} value={player.id}>{player.displayName} · {player.username}</option>)}</select></label>}
+            <p className="text-xs leading-6 text-gray-500">作用范围：{targetScopeLabel}{assessmentScope && view.requiredEnrollYears?.length ? `（${view.requiredEnrollYears.join("、")} 级）` : ""}。以服务端当前名单为准。</p>{needsTarget && <label className="block text-sm">{targetMode === 'two' ? '第一位关联成员' : mode === 'gift' ? '赠送给' : '选择目标'}<select className="mt-2 block w-full max-w-md rounded-lg border border-gray-300 bg-white p-3" value={targetId} disabled={disabled} onChange={e => setTargetId(e.target.value)}><option value="">请选择{targetScopeLabel}</option>{targets.map(player => <option key={player.id} value={player.id}>{player.displayName} · {player.enrollYear} 级 · {player.username}{player.id === userId ? '（自己）' : ''}</option>)}</select></label>}
+            {targetMode === 'two' && <label className="block text-sm">第二位关联成员<select className="mt-2 block w-full max-w-md rounded-lg border border-gray-300 bg-white p-3" value={secondTargetId} disabled={disabled} onChange={e => setSecondTargetId(e.target.value)}><option value="">请选择另一位成员</option>{targets.filter(player => player.id !== targetId).map(player => <option key={player.id} value={player.id}>{player.displayName} · {player.enrollYear} 级 · {player.username}</option>)}</select></label>}
             <Button disabled={!canAct} loading={game.busy} onClick={() => void game.submit({ action: mode, cardId: selected.id, ...(needsTarget ? { targetId } : {}), ...(targetMode === 'two' ? { secondTargetId } : {}) })}>{mode === 'gift' ? <Gift className="h-4 w-4" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}{mode === 'gift' ? '确认赠送一张' : '确认使用一张'}</Button>
           </>}
           {mode === 'use' && locked && <p className="text-sm text-amber-800">当前主动用卡被暂停，请在限制结束后刷新数据。</p>}
           {mode === 'gift' && <p className="text-xs text-gray-500">赠送成功后从你的库存移出一张，接收者永久解锁该卡，你的发现记录仍会保留。</p>}
         </div> : <p className="text-sm text-gray-500">已永久发现这张卡，当前没有库存。再次获得后即可使用或赠送。</p>}
       </CardDetailsDialog>}
-      <details className="rounded-xl border border-gray-200 bg-white p-5 text-sm"><summary className="cursor-pointer font-medium">每周重置与跨周保留说明</summary><div className="mt-4 space-y-3 leading-7 text-gray-600"><p>北京时间周一 00:00 重置：抽卡积分、娱乐时长、免费抽卡次数（恢复 2 次）、当周赠送抽卡机会，以及加速、免疫、封卡、连环等临时状态。未使用的免费次数和赠送机会不补发。</p><p>跨周保留：已获得卡片、图鉴发现记录、SR / SSR 保底进度，以及历史操作记录。卡牌用完或转赠后，图鉴也不会重新变成问号。</p><p>本周综合时长每满 1 分钟对应 1 积分额度；有效打卡、管理员净调整和卡牌净增减统一计算。加时、扣时、偷取、转移与连环都会影响考核、排行和积分额度。抽卡只消耗积分，不扣综合时长；本周已消费积分保留，额度降低后需先补足差额才能继续付费抽卡。卡牌不改原始签到、签退记录。</p></div></details>
+      <details className="rounded-xl border border-gray-200 bg-white p-5 text-sm"><summary className="cursor-pointer font-medium">每周重置与跨周保留说明</summary><div className="mt-4 space-y-3 leading-7 text-gray-600"><p>北京时间周一 00:00 重置：抽卡积分、娱乐时长、免费抽卡次数（恢复 2 次）、当周赠送抽卡机会，以及加速、封卡、连环等临时状态。未使用的免费次数和赠送机会不补发。</p><p>跨周保留：已获得卡片、图鉴发现记录、SR / SSR 保底进度，以及历史操作记录。已主动开启的无懈可击跨周保留至 24 小时到期。卡牌用完或转赠后，图鉴也不会重新变成问号。</p><p>本周综合时长每满 1 分钟对应 1 积分额度；有效打卡、管理员净调整和卡牌净增减统一计算。加时、扣时、偷取、转移与连环都会影响考核、排行和积分额度。抽卡只消耗积分，不扣综合时长；本周已消费积分保留，额度降低后需先补足差额才能继续付费抽卡。卡牌不改原始签到、签退记录。</p></div></details>
       <section className="space-y-3"><h2 className="text-lg font-semibold">最近操作</h2>{view.events.length === 0 ? <p className="text-sm text-gray-500">还没有卡牌操作记录，从本周的免费抽卡开始吧。</p> : <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white px-5">{view.events.map(event => <li key={event.id} className="py-4 text-sm"><p>{event.message}</p><time className="mt-1 block text-xs text-gray-500" dateTime={event.at}>{formatDateTime(event.at)}</time></li>)}</ul>}</section>
     </>}
-  </div>{rulesOpen && <DrawRulesDialog onClose={() => setRulesOpen(false)} />}{game.drawReveal && <DrawAnimation response={game.drawReveal} onComplete={game.finishReveal} />}{game.actionReveal && <CardActionResultDialog action={game.actionReveal.action} response={game.actionReveal.response} onClose={() => { setSelectedId(''); game.finishActionReveal(); }} />}{showGifts && <CardGiftInboxDialog key={giftKey} gifts={incomingGifts} onClose={() => setDismissedGifts(giftKey)} onConfirmed={() => { setDismissedGifts(giftKey); void game.refresh(); }} />}</CardArtScope>;
+  </div>{rulesOpen && <DrawRulesDialog onClose={() => setRulesOpen(false)} />}{game.drawReveal && <DrawAnimation response={game.drawReveal} onComplete={game.finishReveal} />}{game.actionReveal && <CardActionResultDialog action={game.actionReveal.action} response={game.actionReveal.response} onClose={() => { setSelectedId(''); game.finishActionReveal(); }} />}{showDefenses && <CardDefenseInboxDialog key={defenseKey} notices={incomingDefenses} onClose={dismissDefenses} onConfirmed={() => { dismissDefenses(); void game.refresh(); }} />}{showInteractions && <CardInteractionInboxDialog key={interactionKey} notices={incomingInteractions} onClose={dismissInteractions} onConfirmed={() => { dismissInteractions(); void game.refresh(); }} />}{showGifts && <CardGiftInboxDialog key={giftKey} gifts={incomingGifts} onClose={dismissGifts} onConfirmed={() => { dismissGifts(); void game.refresh(); }} />}</CardArtScope>;
 };

@@ -17,6 +17,8 @@ export interface WeeklyStatItem {
 }
 
 export interface TeamWeeklyStatItem extends WeeklyStatItem {
+  /** Current physical inventory count, including duplicate copies; not lifetime discoveries. */
+  cardCount?: number;
   rank?: number;
   memberKey: string;
   displayName: string;

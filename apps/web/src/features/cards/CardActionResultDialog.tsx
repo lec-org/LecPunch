@@ -16,6 +16,7 @@ export const CardActionResultDialog = ({ action, response, onClose }: {
     return () => { element?.close?.(); returnFocus.current?.isConnected && returnFocus.current.focus(); };
   }, []);
   const card = response.result.actionCard;
+  const gained = response.result.gainedCardId ? response.state.collection.find(item => item.id === response.result.gainedCardId && item.unlocked) : undefined;
   return <dialog ref={dialog} aria-labelledby="card-action-result-title" onCancel={event => { event.preventDefault(); onClose(); }}
     className="m-auto w-[min(680px,calc(100vw-32px))] max-h-[calc(100dvh-32px)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-6 text-gray-900 shadow-2xl backdrop:bg-black/55">
     <header className="flex items-center justify-between gap-4"><h2 id="card-action-result-title" className="text-xl font-semibold">{action === 'gift' ? '赠送成功' : '用卡结果'}</h2>
@@ -32,6 +33,7 @@ export const CardActionResultDialog = ({ action, response, onClose }: {
         </>}
       </li>)}
     </ol> : <p className="mt-5 text-sm leading-7 text-gray-600">{response.result.message}</p>}
+    {action === 'use' && gained && <section className="mt-5 flex items-center gap-4 rounded-xl border border-gray-200 bg-gray-50 p-4" aria-label="随机换卡获得"><div className="w-20 shrink-0"><CardArt id={gained.id} name={gained.name ?? '新获得卡牌'} interactive={false} /></div><div><p className="text-xs text-gray-500">新获得 · {gained.rarity}</p><h3 className="mt-1 font-semibold">{gained.name}</h3><p className="mt-2 text-sm text-gray-600">已加入库存，并永久解锁图鉴。</p></div></section>}
     <div className="mt-6 flex justify-end"><Button onClick={onClose}><Check size={16} aria-hidden="true" />知道了</Button></div>
   </dialog>;
 };

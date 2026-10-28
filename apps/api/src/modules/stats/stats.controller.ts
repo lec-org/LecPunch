@@ -30,4 +30,9 @@ export class StatsController {
   async memberWeeklyStats(@CurrentUser() user: AuthUser, @Param('memberKey') memberKey: string) {
     return this.statsService.getMemberWeeklyStats(user.teamId, memberKey);
   }
+
+  @Get('member/:memberKey/cards')
+  async memberCardInventory(@CurrentUser() user: AuthUser, @Param('memberKey') memberKey: string) {
+    return this.statsService.getMemberCardInventory(user.teamId, memberKey);
+  }
 }

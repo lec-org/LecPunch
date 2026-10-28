@@ -13,7 +13,9 @@ import { User, UserDocument } from '../users/schemas/user.schema';
 import { AttendanceSession, AttendanceSessionDocument } from '../attendance/schemas/attendance-session.schema';
 import { PointsService } from '../points/points.service';
 import { CardGame, CardGameDocument, type CardActionReceipt } from './schemas/card-game.schema';
-import { CARD_CATALOG } from './card-catalog';
+import { ASSESSMENT_TARGET_CARDS, CARD_CATALOG } from './card-catalog';
+import { AssessmentWeek, type AssessmentWeekDocument } from '../assessment/schemas/assessment.schema';
+import { readAssessmentCohorts } from '../assessment/assessment-cohorts';
 import { advanceGameState, applyGameAction, getPlayerWeek, type GameContext } from './card-engine';
 
 import { CardCapacityException, CardStorageService, type CardSnapshot as Snapshot } from './card-storage.service';
@@ -39,7 +41,8 @@ export class CardsService {
     private readonly points: PointsService,
     @InjectModel(AttendanceSession.name) private readonly attendance: Model<AttendanceSessionDocument>,
     private readonly config: ConfigService,
-    private readonly storage: CardStorageService
+    private readonly storage: CardStorageService,
+    @InjectModel(AssessmentWeek.name) private readonly assessmentWeeks: Model<AssessmentWeekDocument>
   ) {}
 
   private async context(teamId: string, game: Snapshot, random: () => number = () => { throw new Error('Randomness requires an action'); }): Promise<GameContext> {
@@ -50,13 +53,15 @@ export class CardsService {
         if (key <= week && value.accelerationAt !== undefined) sessionWeeks.add(key);
       }
     }
-    const [members, earned, sessions] = await Promise.all([
+    const [members, allMembers, earned, sessions] = await Promise.all([
       this.users.find({ teamId, status: 'active' }).lean().exec(),
+      this.users.find({ teamId }).select('enrollYear').lean().exec(),
       this.points.getTeamWeekBaseSeconds(teamId, week),
       this.attendance.find({ teamId, weekKey: { $in: [...sessionWeeks] }, status: 'completed', durationSeconds: { $gt: 0, $lt: 18000 } })
         .select('_id userId weekKey checkOutAt durationSeconds').lean().exec()
     ]);
-    return { now, week, random,
+    const assessmentYears = await readAssessmentCohorts(this.assessmentWeeks, teamId, allMembers.map(member => member.enrollYear), week);
+    return { now, week, random, assessmentYears,
       players: members.map(member => ({ id: String(member._id), username: member.username, name: member.displayName, enrollYear: member.enrollYear })),
       baseSeconds: earned,
       sessions: sessions.filter(session => session.checkOutAt).map(session => ({ id: String(session._id), userId: session.userId, weekKey: session.weekKey, checkOutAt: new Date(session.checkOutAt!).getTime(), durationSeconds: session.durationSeconds! }))
@@ -70,11 +75,10 @@ export class CardsService {
   private async view(game: Snapshot, user: AuthUser, ctx: GameContext): Promise<CardGameView> {
     const week = getPlayerWeek(game.state, user.userId, ctx.week);
     const player = game.state.members[user.userId];
-    const own = ctx.players.find(member => member.id === user.userId)!;
-    const [events, incomingGifts] = await Promise.all([this.storage.events(game, user.userId), this.storage.incomingGifts(user.teamId, user.userId)]);
+    const [events, incomingGifts, incomingDefenses, incomingInteractions] = await Promise.all([this.storage.events(game, user.userId), this.storage.incomingGifts(user.teamId, user.userId), this.storage.incomingDefenses(user.teamId, user.userId), this.storage.incomingInteractions(user.teamId, user.userId)]);
     const targetMode = (id: string): 'none' | 'self-or-other' | 'other' | 'two' | 'recipient' =>
       id === 'r-add' ? 'self-or-other' : id === 'sr-chain' ? 'two' : id === 'r-thief' ? 'recipient' :
-      ['r-skip', 'sr-famine', 'sr-redking', 'ssr-arrows'].includes(id) ? 'other' : 'none';
+      ['r-steal', 'r-skip', 'sr-famine', 'sr-redking', 'ssr-arrows'].includes(id) ? 'other' : 'none';
     return {
       capacityLimited: game.capacityLimited === true,
       entertainmentSeconds: week.entertainmentSeconds,
@@ -85,11 +89,13 @@ export class CardsService {
         const unlocked = player.discovered.includes(card.id);
         return { id: publicId(card.id), rarity: card.rarity, unlocked, quantity: player.inventory[card.id] ?? 0,
           ...(unlocked ? { name: card.name, type: card.type, stat: card.stat, summary: card.summary, effect: card.effect, detail: card.detail,
-            targetMode: targetMode(card.id), usable: !['n-shield', 'r-blade', 'sr-reflect'].includes(card.id) } : {}) };
+            targetMode: targetMode(card.id), targetScope: ASSESSMENT_TARGET_CARDS.includes(card.id) ? 'assessment' as const : 'same-grade' as const,
+            usable: !['n-shield', 'r-blade', 'sr-reflect'].includes(card.id) } : {}) };
       }),
-      players: ctx.players.filter(member => member.enrollYear === own.enrollYear).map(member => ({ id: member.id, username: member.username, displayName: member.name, enrollYear: member.enrollYear })),
+      players: ctx.players.map(member => ({ id: member.id, username: member.username, displayName: member.name, enrollYear: member.enrollYear })),
+      requiredEnrollYears: ctx.assessmentYears,
       statuses: { acceleration: week.accelerationAt !== undefined, immuneUntil: this.futureDate(week.immuneUntil, ctx.now), lockedUntil: this.futureDate(week.lockedUntil, ctx.now), starvedUntil: this.futureDate(week.starvedUntil, ctx.now) },
-      events, incomingGifts
+      events, incomingGifts, incomingDefenses, incomingInteractions
     };
   }
 
@@ -124,6 +130,22 @@ export class CardsService {
     return this.storage.acknowledgeGifts(user.teamId, user.userId, [...new Set(ids)]);
   }
 
+  async acknowledgeDefenses(user: AuthUser, ids: string[]) {
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 20 || ids.some(id => typeof id !== 'string' || !/^[a-f\d]{64}$/.test(id))) {
+      throw new BadRequestException('一次只能确认 1 至 20 条有效防御通知');
+    }
+    const { ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
+    return this.storage.acknowledgeDefenses(user.teamId, user.userId, [...new Set(ids)]);
+  }
+
+  async acknowledgeInteractions(user: AuthUser, ids: string[]) {
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 20 || ids.some(id => typeof id !== 'string' || !/^[a-f\d]{64}$/.test(id))) {
+      throw new BadRequestException('一次只能确认 1 至 20 条有效卡牌互动通知');
+    }
+    const { ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
+    return this.storage.acknowledgeInteractions(user.teamId, user.userId, [...new Set(ids)]);
+  }
+
   async getWeekPoints(user: AuthUser, weekKey: string) {
     const { game, ctx } = await this.refresh(user.teamId);
     this.assertActor(user, ctx);
@@ -132,6 +154,36 @@ export class CardsService {
     const week = live ?? (await this.storage.archivedWeeks(user.teamId, { userId: user.userId, weekKey }))[0]?.week;
     const base = weekKey === ctx.week ? ctx.baseSeconds : await this.points.getTeamWeekBaseSeconds(user.teamId, weekKey);
     return weeklyDrawPoints(base[user.userId] ?? 0, week?.entertainmentSeconds ?? 0, week?.spentPoints ?? 0);
+  }
+
+  private inventoryItems(game: Snapshot | null, userId: string) {
+    const inventory = game?.state.members[userId]?.inventory ?? {};
+    if (Object.entries(inventory).some(([id, quantity]) => !Number.isSafeInteger(quantity) || quantity < 0 ||
+      (quantity > 0 && !CARD_CATALOG.some(card => card.id === id)))) throw new ServiceUnavailableException('卡牌库存数据待核实');
+    return CARD_CATALOG.filter(card => (inventory[card.id] ?? 0) > 0).map(card => ({
+      id: publicId(card.id), name: card.name, rarity: card.rarity, quantity: inventory[card.id], type: card.type, effect: card.effect, detail: card.detail
+    }));
+  }
+
+  private async inventorySnapshot(teamId: string) {
+    const existing = await this.games.findOne({ teamId }).select('teamId').lean().exec();
+    return existing ? this.storage.load(teamId, getWeekKey(new Date())) : null;
+  }
+
+  async getMemberInventory(teamId: string, userId: string) {
+    const items = this.inventoryItems(await this.inventorySnapshot(teamId), userId);
+    const total = items.reduce((sum, card) => sum + card.quantity, 0);
+    if (!Number.isSafeInteger(total)) throw new ServiceUnavailableException('卡牌库存数量待核实');
+    return { total, items };
+  }
+
+  async getTeamInventoryCounts(teamId: string) {
+    const game = await this.inventorySnapshot(teamId);
+    return Object.fromEntries(Object.keys(game?.state.members ?? {}).map(userId => {
+      const total = this.inventoryItems(game, userId).reduce((sum, card) => sum + card.quantity, 0);
+      if (!Number.isSafeInteger(total)) throw new ServiceUnavailableException('卡牌库存数量待核实');
+      return [userId, total];
+    }));
   }
 
   async action(user: AuthUser, input: CardGameActionInput): Promise<CardGameActionResponse> {
@@ -162,8 +214,19 @@ export class CardsService {
         if (!member) throw new BadRequestException('结算对象不在当前团队');
         return { id, username: member.username, displayName: member.name || member.username };
       };
-      const effects = result.effects?.map(({ targetId, actualTargetId, ...effect }) => ({ ...effect, target: person(targetId),
-        ...(actualTargetId ? { actualTarget: person(actualTargetId) } : {}) }));
+      const historicalSourceIds = [...new Set((result.effects ?? []).flatMap(effect => effect.sourceId && !ctx.players.some(player => player.id === effect.sourceId) ? [effect.sourceId] : []))];
+      const historicalSources = historicalSourceIds.length ? await this.users.find({ teamId: user.teamId, _id: { $in: historicalSourceIds } })
+        .select('_id username displayName').lean().exec() : [];
+      const sourcePerson = (id: string) => {
+        if (ctx.players.some(player => player.id === id)) return person(id);
+        const member = historicalSources.find(item => String(item._id) === id);
+        return { id, username: member?.username ?? `历史成员 ID: ${id}`, displayName: member?.displayName || member?.username || '原连环施卡者' };
+      };
+      const effects = result.effects?.map(({ targetId, actualTargetId, sourceId, sourceCardId, ...effect }) => {
+        const sourceCard = sourceCardId ? CARD_CATALOG.find(item => item.id === sourceCardId) : undefined;
+        return { ...effect, target: person(targetId), ...(actualTargetId ? { actualTarget: sourcePerson(actualTargetId) } : {}),
+          ...(sourceId && sourceCard ? { source: { user: sourcePerson(sourceId), card: { id: publicId(sourceCard.id), name: sourceCard.name, rarity: sourceCard.rarity } } } : {}) };
+      });
       const card = privateCardId ? CARD_CATALOG.find(item => item.id === privateCardId)! : undefined;
       const actionCard = card ? { id: publicId(card.id), name: card.name, rarity: card.rarity } : undefined;
       const descriptions = effects?.map(effect => {
@@ -184,8 +247,39 @@ export class CardsService {
         ...(result.drawCount ? { drawCount: result.drawCount, radianceCount: result.radianceCount } : {})
       };
       const at = new Date(ctx.now).toISOString();
+      const defenseByRecipient = new Map<string, NonNullable<CardActionReceipt['defenses']>[number]>();
+      const noticeCard = (id: string) => {
+        const entry = CARD_CATALOG.find(item => item.id === id)!;
+        return { id: publicId(id), name: entry.name, rarity: entry.rarity };
+      };
+      for (const defense of result.defenses ?? []) {
+        const delivery = defenseByRecipient.get(defense.userId) ?? { recipientId: defense.userId, notice: { at, events: [] } };
+        delivery.notice.events.push({ attacker: sourcePerson(defense.attackerId), attackCard: noticeCard(defense.attackCardId),
+          defenseCard: noticeCard(defense.defenseCardId), outcome: defense.outcome });
+        defenseByRecipient.set(defense.userId, delivery);
+      }
+      const interactions: NonNullable<CardActionReceipt['interactions']> = [];
+      if (input.action === 'use' && actionCard) {
+        const recipients = new Set((effects ?? []).flatMap(effect => [effect.target.id, effect.actualTarget?.id])
+          .filter((id): id is string => Boolean(id && id !== user.userId)));
+        for (const recipientId of new Set([...recipients, ...defenseByRecipient.keys()])) {
+          const ownEffects = effects?.filter(effect => effect.target.id === recipientId || effect.actualTarget?.id === recipientId) ?? [];
+          // Selection belongs to the original target, never to a reflected recipient.
+          const selection = ownEffects.some(effect => effect.target.id === recipientId && effect.randomTarget) ? { randomlySelected: true } : {};
+          const defended = defenseByRecipient.get(recipientId);
+          if (defended) Object.assign(defended.notice, selection, { effects: ownEffects });
+          else {
+            const source = ownEffects[0]?.source;
+            const sameSource = source && ownEffects.every(effect => effect.source?.user.id === source.user.id && effect.source.card.id === source.card.id);
+            interactions.push({ recipientId, notice: { at, sender: sameSource ? source.user : person(user.userId),
+              card: sameSource ? source.card : actionCard, ...selection, effects: ownEffects } });
+          }
+        }
+      }
       const receipt: CardActionReceipt = { actorId: user.userId, requestKey: input.requestKey, hash: requestHash, at, result: resultView,
-        ...(input.action === 'gift' && actionCard ? { gift: { recipientId: input.targetId!, notice: { at, sender: person(user.userId), card: actionCard } } } : {}) };
+        ...(input.action === 'gift' && actionCard ? { gift: { recipientId: input.targetId!, notice: { at, sender: person(user.userId), card: actionCard } } } : {}),
+        ...(defenseByRecipient.size ? { defenses: [...defenseByRecipient.values()] } : {}),
+        ...(interactions.length ? { interactions } : {}) };
       if (await this.storage.commit(game, state, ctx.now, { receiptKey, value: receipt })) {
         const saved = await this.storage.load(user.teamId, ctx.week);
         return { result: resultView, state: await this.view(saved, user, ctx) };

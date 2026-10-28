@@ -17,11 +17,14 @@ export const useCardGame = (identity: string) => {
   const storageKey = `lecpunch-card-pending:${identity}`;
   const [view, setView] = useState<CardGameView | null>(null), [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [success, setSuccess] = useState('');
+  const [syncError, setSyncError] = useState('');
   const [pending, setPending] = useState<CardGameActionInput | null>(null);
   const [lastResult, setLastResult] = useState<CardGameActionResult | null>(null);
   const [drawReveal, setDrawReveal] = useState<CardGameActionResponse | null>(null);
   const [actionReveal, setActionReveal] = useState<{ action: 'use' | 'gift'; response: CardGameActionResponse } | null>(null);
   const revealRef = useRef<CardGameActionResponse | null>(null);
+  const actionRevealRef = useRef(false), readController = useRef<AbortController | null>(null);
+  const loadError = useRef('');
   const alive = useRef(true), gate = useRef(false), readId = useRef(0);
   const pendingRef = useRef<CardGameActionInput | null>(null), lastAttempt = useRef<CardGameActionInput | null>(null);
   const storePending = useCallback((input: CardGameActionInput | null) => {
@@ -32,6 +35,7 @@ export const useCardGame = (identity: string) => {
   const apply = useCallback((result: CardGameActionResponse) => {
     // Invalidate any read started before this committed mutation.
     readId.current += 1;
+    readController.current?.abort();
     const action = (pendingRef.current ?? lastAttempt.current)?.action ?? result.result.action;
     const draw = action === 'draw';
     if (draw && result.result.drawAnimation) {
@@ -39,27 +43,50 @@ export const useCardGame = (identity: string) => {
       revealRef.current = result; setDrawReveal(result); setSuccess('');
     } else {
       setView(result.state); setLastResult(draw ? result.result : null); setSuccess(result.result.message);
-      if (action === 'use' || action === 'gift') setActionReveal({ action, response: result });
+      if (action === 'use' || action === 'gift') { actionRevealRef.current = true; setActionReveal({ action, response: result }); }
     }
-    setError(''); setLoading(false);
+    setError(''); setSyncError(''); loadError.current = ''; setLoading(false);
     storePending(null); lastAttempt.current = null;
   }, [storePending]);
-  const refresh = useCallback(async () => {
-    if (revealRef.current) return;
-    const sequence = ++readId.current; setLoading(true);
-    try { const result = await getCardGame(); if (alive.current && sequence === readId.current) { setView(result); setError(''); } }
-    catch (e) { if (alive.current && sequence === readId.current) setError(getApiErrorMessage(e, '卡牌数据加载失败，请重试。')); }
-    finally { if (alive.current && sequence === readId.current) setLoading(false); }
+  const read = useCallback(async (background: boolean, signal?: AbortSignal): Promise<boolean | undefined> => {
+    if (signal?.aborted || gate.current || revealRef.current || (background && (pendingRef.current || actionRevealRef.current || readController.current))) return;
+    readController.current?.abort();
+    const controller = new AbortController(), sequence = ++readId.current;
+    readController.current = controller;
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (!background) setLoading(true);
+    try {
+      const result = await getCardGame(controller.signal);
+      if (!alive.current || controller.signal.aborted || sequence !== readId.current) return;
+      setView(result); setSyncError('');
+      if (!background) setError('');
+      else if (loadError.current) { const previous = loadError.current; setError(current => current === previous ? '' : current); }
+      loadError.current = '';
+      return true;
+    } catch (e) {
+      if (!alive.current || controller.signal.aborted || sequence !== readId.current) return;
+      if (background) setSyncError('暂时无法自动同步卡牌通知，当前内容已保留，连接恢复后会继续重试。');
+      else { loadError.current = getApiErrorMessage(e, '卡牌数据加载失败，请重试。'); setError(loadError.current); }
+      return false;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (readController.current === controller) readController.current = null;
+      if (!background && alive.current && sequence === readId.current) setLoading(false);
+    }
   }, []);
+  const refresh = useCallback(() => read(false), [read]);
+  const refreshInBackground = useCallback((signal: AbortSignal) => read(true, signal), [read]);
   useEffect(() => {
     alive.current = true;
     try { const raw = sessionStorage.getItem(storageKey); if (raw) { const saved: unknown = JSON.parse(raw); if (isPending(saved)) { pendingRef.current = saved; setPending(saved); } } } catch { /* The in-memory gate remains available. */ }
     void refresh();
-    return () => { alive.current = false; readId.current += 1; };
+    return () => { alive.current = false; readId.current += 1; readController.current?.abort(); };
   }, [refresh, storageKey]);
   const submit = useCallback(async (action: CardAction, retry = false) => {
     if (gate.current || revealRef.current || (!retry && pendingRef.current)) return;
     gate.current = true; setBusy(true); setError(''); setSuccess(''); setLastResult(null); readId.current += 1; setLoading(false);
+    readController.current?.abort();
     const previous = retry ? pendingRef.current : lastAttempt.current;
     const same = previous && JSON.stringify({ ...previous, requestKey: undefined }) === JSON.stringify(action);
     const input = retry && previous ? previous : same ? previous! : { ...action, requestKey: crypto.randomUUID() };
@@ -73,7 +100,7 @@ export const useCardGame = (identity: string) => {
   }, [apply, storePending]);
   const verify = useCallback(async () => {
     const input = pendingRef.current; if (!input || gate.current) return;
-    gate.current = true; setBusy(true);
+    gate.current = true; setBusy(true); readId.current += 1; readController.current?.abort(); setLoading(false);
     try { const result = await getCardAction(input.requestKey); if (alive.current) apply(result); }
     catch (e) { if (alive.current) setError(axios.isAxiosError(e) && e.response?.status === 404 ? '暂未查到本次操作，请保留原请求重试；不要再次发起新操作。' : getApiErrorMessage(e, '仍无法核实本次操作，请稍后重试核实。')); }
     finally { gate.current = false; if (alive.current) setBusy(false); }
@@ -83,8 +110,8 @@ export const useCardGame = (identity: string) => {
     revealRef.current = null; setDrawReveal(null); readId.current += 1;
     setView(result.state); setLastResult(result.result); setSuccess(result.result.message);
   }, []);
-  return { view, loading, busy, error, success, pending, lastResult, drawReveal, finishReveal, actionReveal,
-    finishActionReveal: () => setActionReveal(null),
-    clearFeedback: () => { setSuccess(''); if (!pendingRef.current) setError(''); }, refresh, submit, verify,
+  return { view, loading, busy, error, syncError, success, pending, lastResult, drawReveal, finishReveal, actionReveal,
+    finishActionReveal: () => { actionRevealRef.current = false; setActionReveal(null); },
+    clearFeedback: () => { setSuccess(''); if (!pendingRef.current) setError(''); }, refresh, refreshInBackground, submit, verify,
     retry: () => pendingRef.current && submit(pendingRef.current, true) };
 };

@@ -17,11 +17,19 @@ export class CardActionArchive {
   @Prop({ type: SchemaTypes.Mixed }) gift?: CardActionReceipt['gift'];
   /** Mutable delivery metadata; never part of the immutable receipt content hash. */
   @Prop({ type: Date }) giftReadAt?: Date;
+  @Prop({ type: SchemaTypes.Mixed }) defenses?: CardActionReceipt['defenses'];
+  /** Acknowledgement is separate from immutable defense results. */
+  @Prop({ type: [String], default: undefined }) defenseReadBy?: string[];
+  @Prop({ type: SchemaTypes.Mixed }) interactions?: CardActionReceipt['interactions'];
+  @Prop({ type: [String], default: undefined }) interactionReadBy?: string[];
 }
 export const CardActionArchiveSchema = SchemaFactory.createForClass(CardActionArchive);
 CardActionArchiveSchema.index({ teamId: 1, receiptKey: 1 }, { unique: true });
 CardActionArchiveSchema.index({ teamId: 1, actorId: 1, at: -1, receiptKey: 1 });
 CardActionArchiveSchema.index({ teamId: 1, 'gift.recipientId': 1, giftReadAt: 1, at: 1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'gift.recipientId': 1, at: -1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'defenses.recipientId': 1, at: 1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'interactions.recipientId': 1, at: 1, receiptKey: 1 });
 
 @Schema({ collection: 'card_week_archives' })
 export class CardWeekArchive {

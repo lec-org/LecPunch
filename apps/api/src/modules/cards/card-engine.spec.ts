@@ -6,7 +6,7 @@ import { advanceGameState, applyGameAction, createGameState, GameContext, GameSt
 const a = 'member-a', b = 'member-b', c = 'member-c', outsider = 'member-other-year';
 function fixture() {
   const context: GameContext = {
-    week: '2026-10-26', now: Date.parse('2026-10-26T12:00:00Z'), random: () => 0,
+    assessmentYears: [2026, 2025], week: '2026-10-26', now: Date.parse('2026-10-26T12:00:00Z'), random: () => 0,
     baseSeconds: {[a]: 36000, [b]: 36000, [c]: 36000},
     players: [{id:a,username:'aaa',name:'A',enrollYear:2025},{id:b,username:'bbb',name:'B',enrollYear:2025},
       {id:c,username:'ccc',name:'C',enrollYear:2025},{id:outsider,username:'other',name:'D',enrollYear:2024}]
@@ -33,7 +33,7 @@ describe('card collection and economy', () => {
   it('transfers and linked changes affect recipients quota as well as assessment time', () => {
     const { state, context } = fixture();
     const quota = (id: string) => { const week = getPlayerWeek(state, id, context.week); return weeklyDrawPoints(context.baseSeconds[id] ?? 0, week.entertainmentSeconds, week.spentPoints).earned; };
-    use(state, context, 'r-steal');
+    use(state, context, 'r-steal',b);
     expect(quota(a)).toBe(630); expect(quota(b)).toBe(570);
     use(state, context, 'sr-chain', a, c); use(state, context, 'r-add', a);
     expect(quota(a)).toBe(660); expect(quota(c)).toBe(630);
@@ -243,10 +243,10 @@ describe('card collection and economy', () => {
     expect(()=>applyGameAction(state,a,{action:'gift',cardId:'r-add',targetId:b},context)).toThrow('兵粮寸断');
     expect(state.members[a].inventory['r-add']).toBe(1);
   });
-  it('week changes reset spend/free/status/balance while cards, discovery and pity persist', () => {
+  it('week changes reset spend/free/expired-status/balance while cards, discovery and pity persist', () => {
     const {state,context}=fixture();own(state,a,'r-add');state.members[a].discovered=['r-add'];state.members[a].pitySR=8;
     Object.assign(getPlayerWeek(state,a,context.week),{freeUsed:2,spentPoints:60,entertainmentSeconds:-3600,immuneUntil:context.now+99999999,bonusDraws:3});
-    state.links.push({a,b,week:context.week,createdBy:a});context.week='2026-11-02';advanceGameState(state,context);
+    state.links.push({a,b,week:context.week,createdBy:a});context.week='2026-11-02';context.now+=7*86400000;advanceGameState(state,context);
     expect(getPlayerWeek(state,a,context.week)).toEqual({entertainmentSeconds:0,mintedSeconds:0,spentPoints:0,freeUsed:0,bonusDraws:0});
     expect(state.members[a].inventory['r-add']).toBe(1);expect(state.members[a].discovered).toEqual(['r-add']);expect(state.members[a].pitySR).toBe(8);expect(state.links).toEqual([]);
     expect(getPlayerWeek(state,a,'2026-10-26').entertainmentSeconds).toBe(-3600);
@@ -266,20 +266,71 @@ describe('card collection and economy', () => {
 });
 
 describe('card application and defenses', () => {
+  it.each(['r-skip', 'r-thief', 'sr-famine', 'sr-redking'])('%s targets current assessment members across grades and rejects older grades atomically', card => {
+    const {state,context}=fixture(); context.players.find(player=>player.id===b)!.enrollYear=2026;
+    getPlayerWeek(state,c,context.week).entertainmentSeconds=6000;
+    use(state,context,card,b);
+    own(state,a,card); const before=structuredClone(state);
+    expect(()=>applyGameAction(state,a,{action:'use',cardId:card,targetId:outsider},context)).toThrow('当前应考');
+    expect(state).toEqual(before);
+  });
+  it('charity shares with both assessment cohorts while angel and lightning keep same-grade scope', () => {
+    const {state,context}=fixture();context.players.find(player=>player.id===b)!.enrollYear=2026;
+    getPlayerWeek(state,a,context.week).entertainmentSeconds=6000;
+    use(state,context,'r-charity');
+    expect([b,c,outsider].map(id=>getPlayerWeek(state,id,context.week).entertainmentSeconds)).toEqual([300,300,0]);
+    use(state,context,'sr-angel');
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(300);
+    use(state,context,'sr-lightning');
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(300);
+    expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-1500);
+  });
+  it('steal requires the chosen same-grade target instead of selecting a random player', () => {
+    const {state,context}=fixture();
+    own(state,a,'r-steal');const before=structuredClone(state);
+    expect(()=>applyGameAction(state,a,{action:'use',cardId:'r-steal'},context)).toThrow('同年级');
+    expect(()=>applyGameAction(state,a,{action:'use',cardId:'r-steal',targetId:outsider},context)).toThrow('同年级');
+    expect(state).toEqual(before);
+    use(state,context,'r-steal',c);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,c,context.week).entertainmentSeconds).toBe(-1800);
+  });
+  it('self-judgement consumes the weakest applicable defense once and never reflects into itself', () => {
+    const {state,context}=fixture();own(state,a,'n-shield');own(state,a,'r-blade');own(state,a,'sr-reflect');
+    use(state,context,'ssr-invincible');
+    expect(use(state,context,'n-gamble').defenses?.[0].defenseCardId).toBe('n-shield');
+    expect(state.members[a].inventory['r-blade']).toBe(1);
+    expect(use(state,context,'n-gamble').defenses?.[0].defenseCardId).toBe('r-blade');
+    expect(state.members[a].inventory['sr-reflect']).toBe(1);
+    use(state,context,'n-gamble');
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(-1800);
+    expect(state.members[a].inventory['sr-reflect']).toBe(1);
+  });
   it('reports the selected random target, blocked outcome and actual reflected target', () => {
     const { state, context } = fixture();
-    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, actualTargetId: b, outcome: 'applied', deltaSeconds: -1800 });
+    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, actualTargetId: b, randomTarget: true, outcome: 'applied', deltaSeconds: -1800 });
     own(state, b, 'n-shield');
-    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, outcome: 'blocked', deltaSeconds: 0 });
+    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, randomTarget: true, outcome: 'blocked', deltaSeconds: 0 });
     own(state, b, 'sr-reflect');
-    expect(use(state, context, 'r-steal').effects?.[0]).toMatchObject({ targetId: b, actualTargetId: a, outcome: 'reflected', deltaSeconds: -1800 });
+    expect(use(state, context, 'r-steal', b).effects?.[0]).toMatchObject({ targetId: b, actualTargetId: a, outcome: 'reflected', deltaSeconds: -1800 });
   });
   it('reports lightning username-order misses and the first successful judgement', () => {
     const { state, context } = fixture(); const rolls = [0.9, 0]; context.random = () => rolls.shift() ?? 0;
     expect(use(state, context, 'sr-lightning').effects).toEqual([
-      { targetId: b, kind: 'judgement', outcome: 'no-effect', detail: '雷电判定未命中' },
-      { targetId: c, actualTargetId: c, kind: 'time', outcome: 'applied', deltaSeconds: -3600 }
+      { targetId: b, randomTarget: true, kind: 'judgement', outcome: 'no-effect', detail: '雷电判定未命中（逐人独立 50% 判定），未扣除时长' },
+      { targetId: c, randomTarget: true, kind: 'judgement', outcome: 'applied', detail: '雷电判定命中（逐人独立 50% 判定）' },
+      { targetId: c, actualTargetId: c, randomTarget: true, kind: 'time', outcome: 'applied', deltaSeconds: -3600 }
     ]);
+  });
+  it('does not label chosen targets or linked recipients as system-random targets', () => {
+    const { state, context } = fixture();
+    use(state, context, 'sr-chain', b, c);
+    const effects = use(state, context, 'n-reduce').effects!;
+    expect(effects.find(effect => effect.targetId === b)?.randomTarget).toBe(true);
+    expect(effects.find(effect => effect.targetId === c)?.randomTarget).toBeUndefined();
+    expect(effects.find(effect => effect.targetId === c)).toMatchObject({ sourceId: a, sourceCardId: 'sr-chain' });
+    expect(use(state, context, 'r-steal', b).effects!.some(effect => effect.randomTarget)).toBe(false);
+    expect(use(state, context, 'sr-famine', b).effects![0].randomTarget).toBeUndefined();
   });
   it('does not attribute an older checkout acceleration to the card currently used', () => {
     const { state, context } = fixture();
@@ -290,7 +341,7 @@ describe('card application and defenses', () => {
     expect(result.effects?.map(effect => effect.targetId)).toEqual([b]);
   });
   it('reduction and steal may make net time negative without a separate minted balance', () => {
-    const {state,context}=fixture();use(state,context,'n-reduce');use(state,context,'r-steal');
+    const {state,context}=fixture();use(state,context,'n-reduce');use(state,context,'r-steal',b);
     expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-3600);
     expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);
     expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(0);
@@ -303,20 +354,74 @@ describe('card application and defenses', () => {
   it('N shield protects N, blade protects N/R, and weaker available defense is spent first', () => {
     const {state,context}=fixture();own(state,b,'n-shield');own(state,b,'r-blade');
     use(state,context,'n-reduce');expect(state.members[b].inventory['n-shield']).toBe(0);expect(state.members[b].inventory['r-blade']).toBe(1);
-    use(state,context,'r-steal');expect(state.members[b].inventory['r-blade']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
-    own(state,b,'n-shield');use(state,context,'r-steal');expect(state.members[b].inventory['n-shield']).toBe(1);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
+    use(state,context,'r-steal',b);expect(state.members[b].inventory['r-blade']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
+    own(state,b,'n-shield');use(state,context,'r-steal',b);expect(state.members[b].inventory['n-shield']).toBe(1);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
   });
   it('a harmless gamble does not spend defenses; harmful self gamble does', () => {
     const {state,context}=fixture();own(state,a,'n-shield');context.random=()=>0.9;
     use(state,context,'n-gamble');expect(state.members[a].inventory['n-shield']).toBe(1);
     context.random=()=>0;use(state,context,'n-gamble');expect(state.members[a].inventory['n-shield']).toBe(0);expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
   });
-  it('red king ignores all immunity except one non-recursive reflection', () => {
-    const {state,context}=fixture();own(state,b,'n-shield');own(state,b,'r-blade');getPlayerWeek(state,b,context.week).immuneUntil=context.now+9999;
+  it('red king bypasses lower-rarity defenses but can be reflected once', () => {
+    const {state,context}=fixture();own(state,b,'n-shield');own(state,b,'r-blade');
     use(state,context,'sr-redking',b);expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
     own(state,b,'sr-reflect');own(state,a,'sr-reflect');use(state,context,'sr-redking',b);
     expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(-1800);expect(state.members[a].inventory['sr-reflect']).toBe(1);
     expect(state.members[b].inventory['n-shield']).toBe(1);expect(state.members[b].inventory['r-blade']).toBe(1);
+  });
+  it.each(['n-reduce', 'r-steal', 'r-skip', 'r-thief', 'sr-lightning', 'sr-famine', 'sr-invasion', 'sr-redking', 'ssr-arrows'])('the SSR ward blocks incoming %s without consuming passive defenses', cardId => {
+    const {state,context}=fixture();
+    const targetWeek=getPlayerWeek(state,b,context.week);
+    targetWeek.immuneUntil=context.now+9999;targetWeek.entertainmentSeconds=6000;
+    own(state,b,'n-acceleration');own(state,b,'n-shield');own(state,b,'r-blade');own(state,b,'sr-reflect');
+    const before=structuredClone(state.members[b]);
+    const result=use(state,context,cardId,cardId==='r-thief'?c:b);
+    expect(state.members[b].inventory).toEqual(before.inventory);
+    expect(state.members[b].weeks).toEqual(before.weeks);
+    expect(result.effects?.some(effect=>effect.targetId===b&&effect.outcome==='blocked')).toBe(true);
+    expect(state.members[a].inventory[cardId]).toBe(0);
+  });
+  it('an active ward also blocks reflected red king damage', () => {
+    const {state,context}=fixture();own(state,b,'sr-reflect');own(state,a,'sr-reflect');
+    getPlayerWeek(state,a,context.week).immuneUntil=context.now+9999;
+    use(state,context,'sr-redking',b);
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
+    expect(state.members[b].inventory['sr-reflect']).toBe(0);
+    expect(state.members[a].inventory['sr-reflect']).toBe(1);
+  });
+  it('red king applies again exactly when the ward expires', () => {
+    const {state,context}=fixture();getPlayerWeek(state,b,context.week).immuneUntil=context.now;
+    use(state,context,'sr-redking',b);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
+  });
+  it('keeps an activated ward for the complete 24 hours across Monday', () => {
+    const {state,context}=fixture(); context.week='2026-10-26';context.now=Date.parse('2026-11-01T15:30:00Z');
+    own(state,b,'ssr-invincible');
+    applyGameAction(state,b,{action:'use',cardId:'ssr-invincible'},context);
+    const until=context.now+86400000;
+    context.week='2026-11-02';context.now=Date.parse('2026-11-01T16:01:00Z');
+    use(state,context,'sr-redking',b);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,b,context.week).immuneUntil).toBe(until);
+    expect(state.members[b].wardUntil).toBe(until);
+    context.now=until;
+    use(state,context,'sr-redking',b);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-1800);
+    expect(state.members[b].wardUntil).toBeUndefined();
+  });
+  it('keeps a live legacy ward when an inactive member returns after their old week was archived', () => {
+    const {state,context}=fixture();
+    const until=Date.parse('2026-11-02T15:30:00Z');
+    getPlayerWeek(state,b,context.week).immuneUntil=until;
+    context.week='2026-11-02';context.now=Date.parse('2026-11-01T21:30:00Z');
+    context.players=context.players.filter(player=>player.id!==b);
+    advanceGameState(state,context);
+    delete state.members[b].weeks['2026-10-26'];
+    context.players.push({id:b,username:'bbb',name:'B',enrollYear:2025});
+    use(state,context,'sr-redking',b);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(0);
+    expect(getPlayerWeek(state,b,context.week).immuneUntil).toBe(until);
   });
   it('immunity rejects other benefits/attacks but not self-cast effects', () => {
     const {state,context}=fixture();getPlayerWeek(state,b,context.week).immuneUntil=context.now+9999;

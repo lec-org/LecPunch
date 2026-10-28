@@ -120,6 +120,7 @@ export class StatsService {
     ]);
     const statsByUserId = new Map(rows.map((row) => [row._id, row]));
     const entertainment = await this.cardsService?.getTeamWeekEntertainment(teamId, weekKey) ?? {};
+    const cardCounts = this.cardsService ? await this.cardsService.getTeamInventoryCounts(teamId) : undefined;
 
     const items = members
       .map((member) => {
@@ -132,6 +133,7 @@ export class StatsService {
         const totalDurationSeconds = comprehensiveDurationSeconds(recordedDurationSeconds, manualAdjustmentSeconds, entertainmentSeconds);
         return {
           memberKey: this.usersService.getMemberKey(member.id),
+          ...(cardCounts ? { cardCount: cardCounts[member.id] ?? 0 } : {}),
           totalDurationSeconds,
           ...(this.cardsService ? { entertainmentSeconds, weeklyGoalSeconds: goal, assessmentComplete: totalDurationSeconds >= goal } : {}),
           recordedDurationSeconds,
@@ -185,6 +187,14 @@ export class StatsService {
       },
       items
     };
+  }
+
+  async getMemberCardInventory(currentUserTeamId: string, memberKey: string) {
+    const member = await this.usersService.findByMemberKey(memberKey);
+    if (!member) throw new NotFoundException('成员不存在');
+    if (member.teamId !== currentUserTeamId) throw new ForbiddenException('不可查看其他团队成员的卡牌库存');
+    if (!this.cardsService) throw new NotFoundException('卡牌功能尚未启用');
+    return { member: { memberKey, displayName: member.displayName }, ...await this.cardsService.getMemberInventory(currentUserTeamId, member.id) };
   }
 
   getWeeklyGoalSeconds(enrollYear: number): number {

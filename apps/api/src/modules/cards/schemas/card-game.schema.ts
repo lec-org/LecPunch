@@ -1,7 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes } from 'mongoose';
 import type { GameState, PlayerWeek } from '../card-engine';
-import type { CardGameActionResult, CardGiftNotice } from '@lecpunch/shared';
+import type { CardGameActionResult, CardGiftNotice, CardDefenseNotice, CardInteractionNotice } from '@lecpunch/shared';
 
 export interface CardActionReceipt {
   actorId: string;
@@ -10,6 +10,8 @@ export interface CardActionReceipt {
   result: CardGameActionResult;
   at: string;
   gift?: { recipientId: string; notice: Omit<CardGiftNotice, 'id'> };
+  defenses?: { recipientId: string; notice: Omit<CardDefenseNotice, 'id'> }[];
+  interactions?: { recipientId: string; notice: Omit<CardInteractionNotice, 'id'> }[];
 }
 
 export interface PendingCardWrite {

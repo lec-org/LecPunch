@@ -1,9 +1,10 @@
+import { assertCohortYears, readAssessmentCohorts } from './assessment-cohorts';
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DateTime } from 'luxon';
-import { assessmentEnrollYears, isValidEnrollmentYear, requiresWeeklyAssessment, weeklyGoalSeconds, type AssessmentLeaderboardView, type AssessmentMemberHistory, type AssessmentMemberSummaries } from '@lecpunch/shared';
+import { requiresWeeklyAssessment, weeklyGoalSeconds, type AssessmentLeaderboardView, type AssessmentMemberHistory, type AssessmentMemberSummaries } from '@lecpunch/shared';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { UsersService } from '../users/users.service';
@@ -113,9 +114,7 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
   }
 
   private assertEnrollmentYears(years: unknown[], week: string) {
-    if (years.some(year => !isValidEnrollmentYear(year, Number(week.slice(0, 4))))) {
-      throw new ServiceUnavailableException('Invalid enrollment year: correct member data before assessment; historical snapshots were not rewritten');
-    }
+    assertCohortYears(years, week);
   }
 
   private goal(year: number) { try { return Number.isInteger(year) ? weeklyGoalSeconds(year) : null; } catch { return null; } }
@@ -164,21 +163,7 @@ export class AssessmentService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async observedRequiredYears(teamId: string, enrollYears: Array<number | null | undefined>, throughWeek: string) {
-    // A previous week's final observation can commit after the next week was created.
-    // Read the team-wide high-water mark, rather than assuming the latest week contains it.
-    this.assertEnrollmentYears(enrollYears, throughWeek);
-    const maximum = Number(throughWeek.slice(0, 4)) + 1;
-    const rows = await this.weeks.aggregate<{ latest: number; invalid?: number }>([
-      { $match: { teamId, weekKey: { $lte: throughWeek } } }, { $unwind: '$state.requiredEnrollYears' },
-      { $group: { _id: null, latest: { $max: '$state.requiredEnrollYears' }, invalid: { $sum: { $cond: [{ $and: [
-        { $gte: ['$state.requiredEnrollYears', 2000] }, { $lte: ['$state.requiredEnrollYears', maximum] },
-        { $eq: ['$state.requiredEnrollYears', { $trunc: '$state.requiredEnrollYears' }] }
-      ] }, 0, 1] } } } }
-    ]).exec();
-    if (rows.some(row => row.invalid || !isValidEnrollmentYear(row.latest, maximum - 1))) {
-      throw new ServiceUnavailableException('Invalid persisted cohort evidence: audited correction required; assessment remains pending');
-    }
-    return assessmentEnrollYears(enrollYears, rows.length ? [rows[0].latest] : [], maximum - 1);
+    return readAssessmentCohorts(this.weeks, teamId, enrollYears, throughWeek);
   }
 
   async memberSummaries(user: AuthUser): Promise<AssessmentMemberSummaries> {

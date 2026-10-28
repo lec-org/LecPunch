@@ -20,11 +20,17 @@ const query = (get: () => any): any => {
 };
 function archiveModel(keyFields: string[]) {
   const rows = new Map<string, any>(); let fail = false;
+  const valuesAt = (row: any, parts: string[]): any[] => {
+    if (Array.isArray(row)) return row.flatMap(item => valuesAt(item, parts));
+    if (!parts.length) return [row];
+    return valuesAt(row?.[parts[0]], parts.slice(1));
+  };
   const match = (row: any, where: any) => Object.entries(where).every(([key, value]: [string, any]) => {
-    const actual = key.split('.').reduce((item, part) => item?.[part], row);
-    if (value && typeof value === 'object' && '$exists' in value) return (actual !== undefined) === value.$exists;
-    if (value && typeof value === 'object' && '$in' in value) return value.$in.includes(actual);
-    return actual === value;
+    const actual = valuesAt(row, key.split('.'));
+    if (value && typeof value === 'object' && '$exists' in value) return actual.some(item => item !== undefined) === value.$exists;
+    if (value && typeof value === 'object' && '$in' in value) return actual.some(item => value.$in.includes(item));
+    if (value && typeof value === 'object' && '$ne' in value) return !actual.includes(value.$ne);
+    return actual.includes(value);
   });
   const model: any = {
     init: async () => undefined,
@@ -41,7 +47,11 @@ function archiveModel(keyFields: string[]) {
     updateMany: (where: any, update: any) => ({ exec: async () => {
       if (fail) throw new Error('archive unavailable');
       let modifiedCount = 0;
-      for (const row of rows.values()) if (match(row, where)) { Object.assign(row, structuredClone(update.$set)); modifiedCount++; }
+      for (const row of rows.values()) if (match(row, where)) {
+        Object.assign(row, structuredClone(update.$set ?? {}));
+        for (const [key, value] of Object.entries(update.$addToSet ?? {})) row[key] = [...new Set([...(row[key] ?? []), value])];
+        modifiedCount++;
+      }
       return { modifiedCount };
     } }),
     bulkWrite: async (operations: any[]) => { for (const { updateOne: op } of operations) await model.updateOne(op.filter, op.update).exec(); }
@@ -76,8 +86,10 @@ function fixture() {
   const config = new ConfigService({ AUTH_SECRET: 'local-test-signing-key-of-sufficient-length' });
   const receipts = archiveModel(['teamId', 'receiptKey']), weeks = archiveModel(['teamId', 'userId', 'weekKey']);
   const storage = new CardStorageService(games as any, receipts.model, weeks.model);
-  const service = new CardsService(games as any, users as any, points as any, attendance as any, config, storage);
+  let cohortEvidence: any[] = [];
+  const service = new CardsService(games as any, users as any, points as any, attendance as any, config, storage, { aggregate: () => query(() => cohortEvidence) } as any);
   return { service, storage, games, receipts, weeks, points, document: () => document, members,
+    setCohortEvidence: (rows: any[]) => { cohortEvidence = rows; },
     setAttendance: (rows: any[]) => { attendanceRows = rows; }, attendanceFilter: () => attendanceFilter };
 }
 
@@ -85,6 +97,235 @@ describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it.each([['r-charity', 'card-09'], ['r-skip', 'card-10'], ['r-thief', 'card-11'], ['sr-famine', 'card-16'], ['sr-redking', 'card-18']])('notifies the affected members of %s and confirms without applying it again', async (cardId, publicCard) => {
+    const receiver = { _id: '6a0000000000000000000012', username: 'test.receiver', displayName: 'Receiver', enrollYear: 2026 };
+    const donor = { _id: '6a0000000000000000000013', username: 'test.donor', displayName: 'Donor', enrollYear: 2025 };
+    f.members.push(receiver, donor); const start = await f.service.getMe(actor);
+    f.document().state.members[actor.userId].inventory[cardId] = 1;
+    for (const id of [actor.userId, donor._id]) f.document().state.members[id].weeks[start.week].entertainmentSeconds = 6000;
+    const input = { requestKey: randomUUID(), action: 'use' as const, cardId: publicCard, ...(cardId !== 'r-charity' ? { targetId: receiver._id } : {}) };
+    const first = await f.service.action(actor, input);
+    const recipient = { ...actor, userId: receiver._id }, notice = (await f.service.getMe(recipient)).incomingInteractions![0];
+    expect(notice.sender.username).toBe(actor.username); expect(notice.card.id).toBe(publicCard);
+    expect(notice.randomlySelected).not.toBe(true);
+    expect(notice.effects.some(effect => effect.target.id === receiver._id && effect.outcome === 'applied')).toBe(true);
+    const before = structuredClone(f.document().state), savedHash = [...f.receipts.rows.values()][0].contentHash;
+    expect(await f.service.acknowledgeInteractions(actor, [notice.id])).toEqual({ acknowledged: 0 });
+    expect(await f.service.acknowledgeInteractions(recipient, [notice.id])).toEqual({ acknowledged: 1 });
+    expect(await f.service.acknowledgeInteractions(recipient, [notice.id])).toEqual({ acknowledged: 0 });
+    expect((await f.service.getMe(recipient)).incomingInteractions).toEqual([]);
+    expect((await f.service.getMe(recipient)).events.some(event => event.message.includes(notice.card.name))).toBe(true);
+    expect((await f.service.action(actor, input)).result).toEqual(first.result);
+    expect(f.document().state).toEqual(before); expect([...f.receipts.rows.values()][0].contentHash).toBe(savedHash);
+    if (cardId === 'r-thief') {
+      const donorNotice = (await f.service.getMe({ ...actor, userId: donor._id })).incomingInteractions![0];
+      expect(donorNotice.effects[0].deltaSeconds).toBe(-1800);
+      expect(donorNotice.randomlySelected).toBe(true);
+      expect(donorNotice.sender.username).toBe(actor.username);
+    }
+    if (cardId === 'sr-famine') {
+      expect(notice.effects[0]).toMatchObject({ kind: 'status', detail: '暂停获得新卡 3 小时' });
+      const locked = await f.service.getMe(recipient);
+      expect(locked.statuses.starvedUntil).not.toBeNull();
+      await expect(f.service.action(recipient, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('兵粮寸断');
+    }
+  });
+
+  it('reports lightning misses and a hit blocked by a ward to the two judged members', async () => {
+    const receiver = { _id: '6a0000000000000000000012', username: 'test.b', displayName: 'B', enrollYear: 2025 };
+    const second = { _id: '6a0000000000000000000013', username: 'test.c', displayName: 'C', enrollYear: 2025 };
+    f.members.push(receiver, second); const initial = await f.service.getMe(actor);
+    f.document().state.members[actor.userId].inventory['sr-lightning'] = 1;
+    f.document().state.members[second._id].weeks[initial.week].immuneUntil = Date.now() + 86400000;
+    const original = (f.service as any).context.bind(f.service), rolls = [0.9, 0];
+    vi.spyOn(f.service as any, 'context').mockImplementation(async (...args: any[]) => ({ ...await original(...args), random: () => rolls.shift() ?? 0 }));
+    await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-14' });
+    const miss = (await f.service.getMe({ ...actor, userId: receiver._id })).incomingInteractions![0];
+    const hit = (await f.service.getMe({ ...actor, userId: second._id })).incomingInteractions![0];
+    expect(miss.effects[0].detail).toContain('未命中');
+    expect(miss).toMatchObject({ randomlySelected: true, sender: { username: actor.username } });
+    expect(hit).toMatchObject({ randomlySelected: true, sender: { username: actor.username } });
+    expect(hit.effects[0].detail).toContain('判定命中'); expect(hit.effects[1].outcome).toBe('blocked');
+    expect((await f.service.getMe({ ...actor, userId: second._id })).entertainmentSeconds).toBe(0);
+  });
+
+  it('uses persisted assessment cohort evidence and exposes the right targeting scope', async () => {
+    f.setCohortEvidence([{ latest: 2026, invalid: 0 }]);
+    const initial = await f.service.getMe(actor);
+    f.document().state.members[actor.userId].discovered = ['r-skip', 'r-steal'];
+    const view = await f.service.getMe(actor);
+    expect(view.requiredEnrollYears).toEqual([2026, 2025]);
+    expect(view.collection.find(card => card.id === 'card-10')).toMatchObject({ targetMode: 'other', targetScope: 'assessment' });
+    expect(view.collection.find(card => card.id === 'card-06')).toMatchObject({ targetMode: 'other', targetScope: 'same-grade' });
+    expect(initial.week).toBe(view.week);
+    f.setCohortEvidence([{ latest: 2062, invalid: 1 }]);
+    await expect(f.service.getMe(actor)).rejects.toThrow('Invalid persisted cohort evidence');
+  });
+
+  it.each([['n-reduce', 'card-02', true], ['r-steal', 'card-06', false], ['sr-invasion', 'card-17', false], ['ssr-arrows', 'card-21', false]] as const)(
+    'delivers the user and settled effect of %s even without a passive defense', async (cardId, publicCard, randomTarget) => {
+      const other = { _id: '6a0000000000000000000012', username: 'test.victim', displayName: 'Victim', enrollYear: 2025 };
+      f.members.push(other); const initial = await f.service.getMe(actor);
+      f.document().state.members[actor.userId].inventory[cardId] = 1;
+      f.document().state.members[other._id].weeks[initial.week].entertainmentSeconds = 6000;
+      await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: publicCard, targetId: other._id });
+      const view = await f.service.getMe({ ...actor, userId: other._id });
+      expect(view.incomingDefenses).toEqual([]);
+      expect(view.incomingInteractions).toHaveLength(1);
+      const notice = view.incomingInteractions![0];
+      expect(notice.sender.username).toBe(actor.username); expect(notice.card.id).toBe(publicCard);
+      expect(Boolean(notice.randomlySelected)).toBe(randomTarget);
+      expect(notice.effects.some(effect => effect.kind === 'time' && effect.deltaSeconds! < 0)).toBe(true);
+    });
+
+  it.each([['n-shield', '仁王盾'], ['r-blade', '名刀司命'], ['sr-reflect', '反弹']])('persists %s automatic defense notices and acknowledges only the recipient without using a second card', async (defenseId, defenseName) => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.defender', displayName: 'Defender', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    const defender = { ...actor, userId: other._id };
+    f.document().state.members[actor.userId].inventory['n-reduce'] = 1;
+    f.document().state.members[other._id].inventory[defenseId] = 1;
+    const input = { requestKey: randomUUID(), action: 'use' as const, cardId: 'card-02' };
+    const action = await f.service.action(actor, input);
+    const view = await f.service.getMe(defender), notices = view.incomingDefenses!;
+    expect(notices).toHaveLength(1);
+    expect(notices[0].randomlySelected).toBe(true);
+    expect(view.incomingInteractions).toEqual([]);
+    expect(notices[0].events[0]).toMatchObject({ attacker: { username: actor.username }, attackCard: { name: '减时长' },
+      defenseCard: { name: defenseName }, outcome: defenseId === 'sr-reflect' ? 'reflected' : 'blocked' });
+    expect((await f.service.getMe(actor)).incomingDefenses).toEqual([]);
+    expect(f.document().state.members[other._id].inventory[defenseId]).toBe(0);
+    const savedHash = [...f.receipts.rows.values()][0].contentHash;
+    expect(await f.service.acknowledgeDefenses(actor, [notices[0].id])).toEqual({ acknowledged: 0 });
+    expect(await f.service.acknowledgeDefenses(defender, [notices[0].id])).toEqual({ acknowledged: 1 });
+    expect(await f.service.acknowledgeDefenses(defender, [notices[0].id])).toEqual({ acknowledged: 0 });
+    expect((await f.service.getMe(defender)).incomingDefenses).toEqual([]);
+    expect((await f.service.getMe(defender)).events.some(event => event.message.includes(defenseName) && event.message.includes(actor.username))).toBe(true);
+    expect([...f.receipts.rows.values()][0].contentHash).toBe(savedHash);
+    expect((await f.service.action(actor, input)).result).toEqual(action.result);
+    expect(f.document().state.members[other._id].inventory[defenseId]).toBe(0);
+    expect(f.receipts.rows.size).toBe(1);
+  });
+
+  it('keeps the random label on the original victim rather than the user hit by reflection', async () => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.reflector', displayName: 'Reflector', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    Object.assign(f.document().state.members[actor.userId].inventory, { 'n-reduce': 1, 'r-blade': 1 });
+    f.document().state.members[other._id].inventory['sr-reflect'] = 1;
+    await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-02' });
+    const victimNotice = (await f.service.getMe({ ...actor, userId: other._id })).incomingDefenses![0];
+    const returnedNotice = (await f.service.getMe(actor)).incomingDefenses![0];
+    expect(victimNotice).toMatchObject({ randomlySelected: true, events: [{ attacker: { username: actor.username }, outcome: 'reflected' }] });
+    expect(returnedNotice.randomlySelected).not.toBe(true);
+    expect(returnedNotice.events[0]).toMatchObject({ attacker: { username: other.username }, defenseCard: { name: '名刀司命' } });
+  });
+
+  it.each([false, true])('attributes a chained deduction to the inactive linker, with reflection=%s', async (reflect) => {
+    const victim = { _id: '6a0000000000000000000012', username: 'test.victim', displayName: 'Victim', enrollYear: 2025 };
+    const linked = { _id: '6a0000000000000000000013', username: 'test.linked', displayName: 'Linked', enrollYear: 2025 };
+    const linker = { _id: '6a0000000000000000000014', username: 'test.linker', displayName: 'Linker', enrollYear: 2025 };
+    f.members.push(victim, linked, linker); const initial = await f.service.getMe(actor);
+    f.document().state.members[actor.userId].inventory['r-steal'] = 1;
+    if (reflect) f.document().state.members[linked._id].inventory['sr-reflect'] = 1;
+    f.document().state.links.push({ a: victim._id, b: linked._id, week: initial.week, createdBy: linker._id });
+    const original = (f.service as any).context.bind(f.service);
+    vi.spyOn(f.service as any, 'context').mockImplementation(async (...args: any[]) => {
+      const ctx = await original(...args); return { ...ctx, players: ctx.players.filter((player: { id: string }) => player.id !== linker._id) };
+    });
+    await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-06', targetId: victim._id });
+    const linkedView = await f.service.getMe({ ...actor, userId: linked._id });
+    const notice = reflect ? linkedView.incomingDefenses![0] : linkedView.incomingInteractions![0];
+    expect(notice).toMatchObject({ effects: [{ source: { user: { username: linker.username }, card: { name: '铁索连环' } }, deltaSeconds: -1800 }] });
+    if (reflect) expect(linkedView.incomingDefenses![0].events[0]).toMatchObject({ attacker: { username: linker.username }, outcome: 'reflected' });
+    else expect(notice).toMatchObject({ sender: { username: linker.username }, card: { name: '铁索连环' } });
+    expect(notice.randomlySelected).not.toBe(true);
+    expect((await f.service.getMe({ ...actor, userId: victim._id })).incomingInteractions![0].sender.username).toBe(actor.username);
+  });
+
+  it('keeps the active ward for repeated attacks and does not create passive-consumption notices', async () => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.defender', displayName: 'Defender', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    const defender = { ...actor, userId: other._id };
+    f.document().state.members[other._id].inventory['ssr-invincible'] = 1;
+    const activation = await f.service.action(defender, { requestKey: randomUUID(), action: 'use', cardId: 'card-20' });
+    const immuneUntil = activation.state.statuses.immuneUntil;
+    expect(new Date(immuneUntil!).getTime() - Date.parse([...f.receipts.rows.values()][0].at)).toBe(86400000);
+    f.document().state.members[actor.userId].inventory['sr-redking'] = 2;
+    f.document().state.members[other._id].inventory['sr-reflect'] = 1;
+    for (let i = 0; i < 2; i++) await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-18', targetId: other._id });
+    const view = await f.service.getMe(defender);
+    expect(view.statuses.immuneUntil).toBe(immuneUntil);
+    expect(view.entertainmentSeconds).toBe(0);
+    expect(view.incomingDefenses).toEqual([]);
+    expect(f.document().state.members[other._id].inventory['sr-reflect']).toBe(1);
+    await expect(f.service.acknowledgeDefenses(defender, [])).rejects.toThrow('1 至 20');
+  });
+
+  it('retains received gift history after the popup has been acknowledged', async () => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.receiver', displayName: 'Receiver', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor); f.document().state.members[actor.userId].inventory['n-reduce'] = 1;
+    await f.service.action(actor, { requestKey: randomUUID(), action: 'gift', cardId: 'card-02', targetId: other._id });
+    const receiver = { ...actor, userId: other._id }, view = await f.service.getMe(receiver);
+    await f.service.acknowledgeGifts(receiver, view.incomingGifts!.map(gift => gift.id));
+    const refreshed = await f.service.getMe(receiver);
+    expect(refreshed.incomingGifts).toEqual([]);
+    expect(refreshed.events.some(event => event.message.includes('收到') && event.message.includes(actor.username) && event.message.includes('减时长'))).toBe(true);
+  });
+  it('recovers an identical archived week inserted by another recovery', async () => {
+    await f.service.getMe(actor);
+    f.document().state.members[actor.userId].weeks['2026-01-05'] = { entertainmentSeconds: -900, mintedSeconds: 0, spentPoints: 0, freeUsed: 0, bonusDraws: 0 };
+    const original = f.weeks.model.updateOne.bind(f.weeks.model);
+    vi.spyOn(f.weeks.model, 'updateOne').mockImplementationOnce(((where: any, update: any) => ({ exec: async () => {
+      await original(where, update).exec(); throw Object.assign(new Error('week concurrent duplicate'), { code: 11000 });
+    } })) as any);
+    expect(await f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).toHaveProperty('2026-01-05', -900);
+    expect(f.document().pendingWrite).toBeUndefined();
+  });
+
+  it('reports physical copies including duplicates without exposing unowned cards or unlocking the viewer', async () => {
+    await f.service.getMe(actor);
+    Object.assign(f.document().state.members[actor.userId].inventory, { 'n-reduce': 3, 'sr-reflect': 2, 'r-add': 0 });
+    const discovered = [...f.document().state.members[actor.userId].discovered];
+    const view = await f.service.getMemberInventory(actor.teamId, actor.userId);
+    expect(view.total).toBe(5);
+    expect(view.items.map(card => [card.id, card.name, card.quantity])).toEqual([['card-02', '减时长', 3], ['card-15', '反弹', 2]]);
+    expect(await f.service.getTeamInventoryCounts(actor.teamId)).toEqual({ [actor.userId]: 5 });
+    expect(f.document().state.members[actor.userId].discovered).toEqual(discovered);
+  });
+
+  it('preserves the pending week when a concurrent archive has conflicting contents', async () => {
+    await f.service.getMe(actor);
+    f.document().state.members[actor.userId].weeks['2026-01-05'] = { entertainmentSeconds: -900, mintedSeconds: 0, spentPoints: 0, freeUsed: 0, bonusDraws: 0 };
+    const original = f.weeks.model.updateOne.bind(f.weeks.model);
+    vi.spyOn(f.weeks.model, 'updateOne').mockImplementationOnce(((where: any, update: any) => ({ exec: async () => {
+      await original(where, { $setOnInsert: { ...update.$setOnInsert, contentHash: 'different-week' } }).exec();
+      throw Object.assign(new Error('conflicting archived week'), { code: 11000 });
+    } })) as any);
+    await expect(f.service.getMemberEntertainmentHistory(actor.teamId, actor.userId)).rejects.toThrow('conflicting archived week');
+    expect(f.document().pendingWrite.weeks).toHaveLength(1);
+    expect([...f.weeks.rows.values()][0].contentHash).toBe('different-week');
+  });
+
+  it.each([false, true])('only clears a legacy receipt after an identical concurrent bulk archive (conflict=%s)', async conflict => {
+    await f.service.getMe(actor);
+    const key = 'a'.repeat(64);
+    const value = { actorId: actor.userId, requestKey: randomUUID(), hash: 'input-hash', at: new Date().toISOString(), result: { message: 'legacy result' } };
+    f.document().receipts[key] = value;
+    const original = f.receipts.model.bulkWrite.bind(f.receipts.model);
+    vi.spyOn(f.receipts.model, 'bulkWrite').mockImplementationOnce((async (operations: any[]) => {
+      await original(operations);
+      if (conflict) [...f.receipts.rows.values()][0].contentHash = 'different-legacy-result';
+      throw Object.assign(new Error('legacy concurrent duplicate'), { code: 11000 });
+    }) as any);
+    if (conflict) {
+      await expect(f.service.getMe(actor)).rejects.toThrow('legacy concurrent duplicate');
+      expect(f.document().receipts[key]).toEqual(value);
+    } else {
+      await f.service.getMe(actor);
+      expect(f.document().receipts[key]).toBeUndefined();
+      expect(f.receipts.rows.size).toBe(1);
+    }
+  });
 
   it('accepts an identical receipt inserted by concurrent recovery after the upsert started', async () => {
     const original = f.receipts.model.updateOne.bind(f.receipts.model);

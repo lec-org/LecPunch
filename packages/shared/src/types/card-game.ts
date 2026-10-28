@@ -14,6 +14,7 @@ export interface CardCollectionItem {
   effect?: string;
   detail?: string;
   targetMode?: 'none' | 'self-or-other' | 'other' | 'two' | 'recipient';
+  targetScope?: 'same-grade' | 'assessment';
   usable?: boolean;
 }
 export interface CardGamePlayer { id: string; username: string; displayName: string; enrollYear: number }
@@ -22,6 +23,10 @@ export interface CardEffectPlayer { id: string; username: string; displayName: s
 export interface CardActionEffect {
   target: CardEffectPlayer;
   actualTarget?: CardEffectPlayer;
+  /** Applies to target only; a reflected actualTarget was not randomly selected. */
+  randomTarget?: boolean;
+  /** A linked effect can originate from a different member's earlier card. */
+  source?: { user: CardEffectPlayer; card: { id: string; name: string; rarity: CardRarity } };
   outcome: 'applied' | 'blocked' | 'reflected' | 'no-effect';
   kind: 'time' | 'cards' | 'status' | 'judgement';
   deltaSeconds?: number;
@@ -31,6 +36,28 @@ export interface CardGiftNotice {
   id: string; at: string;
   sender: CardEffectPlayer;
   card: { id: string; name: string; rarity: CardRarity };
+}
+export interface CardDefenseNotice {
+  id: string; at: string;
+  randomlySelected?: boolean;
+  events: {
+    attacker: CardEffectPlayer;
+    attackCard: { id: string; name: string; rarity: CardRarity };
+    defenseCard: { id: string; name: string; rarity: CardRarity };
+    outcome: 'blocked' | 'reflected';
+  }[];
+  effects?: CardActionEffect[];
+}
+export interface CardInteractionNotice {
+  id: string; at: string; sender: CardEffectPlayer;
+  randomlySelected?: boolean;
+  card: { id: string; name: string; rarity: CardRarity };
+  effects: CardActionEffect[];
+}
+export interface MemberCardInventory {
+  member: { memberKey: string; displayName: string };
+  total: number;
+  items: { id: string; name: string; rarity: CardRarity; quantity: number; type: string; effect: string; detail: string }[];
 }
 export interface CardGameView {
   entertainmentSeconds: number;
@@ -43,9 +70,12 @@ export interface CardGameView {
   pity: { sinceSR: number; sinceSSR: number; srRemaining: number; ssrRemaining: number };
   collection: CardCollectionItem[];
   players: CardGamePlayer[];
+  requiredEnrollYears?: number[];
   statuses: { acceleration: boolean; immuneUntil: string | null; lockedUntil: string | null; starvedUntil: string | null };
   events: CardGameEvent[];
   incomingGifts?: CardGiftNotice[];
+  incomingDefenses?: CardDefenseNotice[];
+  incomingInteractions?: CardInteractionNotice[];
 }
 export interface CardGameActionInput {
   requestKey: string;
