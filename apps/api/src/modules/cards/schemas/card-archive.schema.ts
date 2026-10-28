@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { SchemaTypes } from 'mongoose';
 import type { CardGameActionResult } from '@lecpunch/shared';
+import type { CardActionReceipt } from './card-game.schema';
 import type { PlayerWeek } from '../card-engine';
 
 @Schema({ collection: 'card_action_receipts' })
@@ -13,10 +14,22 @@ export class CardActionArchive {
   @Prop({ required: true, type: String }) hash!: string;
   @Prop({ required: true, type: String }) at!: string;
   @Prop({ required: true, type: SchemaTypes.Mixed }) result!: CardGameActionResult;
+  @Prop({ type: SchemaTypes.Mixed }) gift?: CardActionReceipt['gift'];
+  /** Mutable delivery metadata; never part of the immutable receipt content hash. */
+  @Prop({ type: Date }) giftReadAt?: Date;
+  @Prop({ type: SchemaTypes.Mixed }) defenses?: CardActionReceipt['defenses'];
+  /** Acknowledgement is separate from immutable defense results. */
+  @Prop({ type: [String], default: undefined }) defenseReadBy?: string[];
+  @Prop({ type: SchemaTypes.Mixed }) interactions?: CardActionReceipt['interactions'];
+  @Prop({ type: [String], default: undefined }) interactionReadBy?: string[];
 }
 export const CardActionArchiveSchema = SchemaFactory.createForClass(CardActionArchive);
 CardActionArchiveSchema.index({ teamId: 1, receiptKey: 1 }, { unique: true });
 CardActionArchiveSchema.index({ teamId: 1, actorId: 1, at: -1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'gift.recipientId': 1, giftReadAt: 1, at: 1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'gift.recipientId': 1, at: -1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'defenses.recipientId': 1, at: 1, receiptKey: 1 });
+CardActionArchiveSchema.index({ teamId: 1, 'interactions.recipientId': 1, at: 1, receiptKey: 1 });
 
 @Schema({ collection: 'card_week_archives' })
 export class CardWeekArchive {

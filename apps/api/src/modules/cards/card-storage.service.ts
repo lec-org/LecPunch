@@ -42,9 +42,19 @@ export class CardStorageService implements OnModuleInit {
   private async saveReceipt(teamId: string, receiptKey: string, value: CardActionReceipt) {
     // A conflicting immutable copy must fail closed, never overwrite an already confirmed result.
     const contentHash = digest(value);
-    await this.actions.updateOne({ teamId, receiptKey, contentHash }, {
-      $setOnInsert: { teamId, receiptKey, contentHash, ...value }
-    }, { upsert: true }).exec();
+    try {
+      await this.actions.updateOne({ teamId, receiptKey, contentHash }, {
+        $setOnInsert: { teamId, receiptKey, contentHash, ...value }
+      }, { upsert: true }).exec();
+    } catch (error) {
+      if ((error as { code?: number }).code === 11000) {
+        // Another recovery may have inserted the same immutable receipt after
+        // our upsert began. Accept only its exact content, never a conflicting row.
+        const existing = await this.actions.findOne({ teamId, receiptKey }).select('contentHash').lean().exec();
+        if (existing?.contentHash === contentHash) return;
+      }
+      throw error;
+    }
   }
 
   async load(teamId: string, week: string): Promise<CardSnapshot> {
@@ -65,9 +75,15 @@ export class CardStorageService implements OnModuleInit {
           if (pending.receipt) await this.saveReceipt(teamId, pending.receipt.receiptKey, pending.receipt.value);
           for (const archived of pending.weeks) {
             const contentHash = digest(archived.week);
-            await this.weeks.updateOne({ teamId, userId: archived.userId, weekKey: archived.weekKey, contentHash }, {
-              $setOnInsert: { teamId, ...archived, contentHash }
-            }, { upsert: true }).exec();
+            try {
+              await this.weeks.updateOne({ teamId, userId: archived.userId, weekKey: archived.weekKey, contentHash }, {
+                $setOnInsert: { teamId, ...archived, contentHash }
+              }, { upsert: true }).exec();
+            } catch (error) {
+              const existing = (error as { code?: number }).code === 11000
+                ? await this.weeks.findOne({ teamId, userId: archived.userId, weekKey: archived.weekKey }).select('contentHash').lean().exec() : null;
+              if (existing?.contentHash !== contentHash) throw error;
+            }
           }
           const cleared = await this.games.updateOne({ teamId, revision: game.revision }, {
             $unset: { pendingWrite: 1 }, $inc: { revision: 1 }
@@ -89,10 +105,17 @@ export class CardStorageService implements OnModuleInit {
       const legacy = Object.entries(game.receipts).slice(0, 100);
       if (legacy.length) {
         if (legacy.some(([key]) => !/^[a-f\d]{64}$/.test(key))) throw new ConflictException('旧卡牌回执标识无效，需审计后修复');
-        await this.actions.bulkWrite(legacy.map(([receiptKey, value]) => ({ updateOne: {
-          filter: { teamId, receiptKey, contentHash: digest(value) },
-          update: { $setOnInsert: { teamId, receiptKey, contentHash: digest(value), ...value } }, upsert: true
-        } })), { ordered: false });
+        try {
+          await this.actions.bulkWrite(legacy.map(([receiptKey, value]) => ({ updateOne: {
+            filter: { teamId, receiptKey, contentHash: digest(value) },
+            update: { $setOnInsert: { teamId, receiptKey, contentHash: digest(value), ...value } }, upsert: true
+          } })), { ordered: false });
+        } catch (error) {
+          if ((error as { code?: number }).code !== 11000) throw error;
+          const copies = await this.actions.find({ teamId, receiptKey: { $in: legacy.map(([key]) => key) } }).select('receiptKey contentHash').lean().exec();
+          const hashes = new Map(copies.map(row => [row.receiptKey, row.contentHash]));
+          if (legacy.some(([key, value]) => hashes.get(key) !== digest(value))) throw error;
+        }
         const migrated = await this.games.updateOne({ teamId, revision: game.revision }, {
           $unset: Object.fromEntries(legacy.map(([key]) => [`receipts.${key}`, 1])), $inc: { revision: 1 }
         }).exec();
@@ -131,11 +154,64 @@ export class CardStorageService implements OnModuleInit {
   }
 
   async events(game: CardSnapshot, actorId: string) {
-    const rows = await this.actions.find({ teamId: game.teamId, actorId }).sort({ at: -1, receiptKey: 1 }).limit(20).lean().exec();
+    const [sent, received, defended, interactions] = await Promise.all([
+      this.actions.find({ teamId: game.teamId, actorId }).sort({ at: -1, receiptKey: 1 }).limit(20).lean().exec(),
+      this.actions.find({ teamId: game.teamId, 'gift.recipientId': actorId }).sort({ at: -1, receiptKey: 1 }).limit(20).lean().exec(),
+      this.actions.find({ teamId: game.teamId, 'defenses.recipientId': actorId }).sort({ at: -1, receiptKey: 1 }).limit(20).lean().exec(),
+      this.actions.find({ teamId: game.teamId, 'interactions.recipientId': actorId }).sort({ at: -1, receiptKey: 1 }).limit(20).lean().exec()
+    ]);
+    const rows = [...sent, ...received, ...defended, ...interactions];
     const combined = new Map<string, CardActionReceipt & { receiptKey: string }>(rows.map(row => [row.receiptKey, row]));
-    for (const [key, receipt] of Object.entries(game.receipts)) if (receipt.actorId === actorId) combined.set(key, { ...receipt, receiptKey: key });
+    for (const [key, receipt] of Object.entries(game.receipts)) if (receipt.actorId === actorId || receipt.gift?.recipientId === actorId || receipt.defenses?.some(item => item.recipientId === actorId) || receipt.interactions?.some(item => item.recipientId === actorId)) combined.set(key, { ...receipt, receiptKey: key });
     return [...combined.values()].sort((a, b) => b.at.localeCompare(a.at) || a.receiptKey.localeCompare(b.receiptKey)).slice(0, 20)
-      .map(row => ({ id: row.receiptKey, at: row.at, message: row.result.message }));
+      .map(row => ({ id: row.receiptKey, at: row.at, message: row.defenses?.find(item => item.recipientId === actorId)?.notice.events.map(event =>
+        `${event.attacker.displayName}（${event.attacker.username}）使用「${event.attackCard.name}」；已自动消耗「${event.defenseCard.name}」${event.outcome === 'reflected' ? '反弹攻击' : '成功防御'}`).join('；') || row.interactions?.filter(item => item.recipientId === actorId).map(({ notice }) =>
+          `${notice.sender.displayName}（${notice.sender.username}）对你使用「${notice.card.name}」；${notice.effects.map(effect => effect.outcome === 'blocked' ? '防御或免疫抵消，未生效' : effect.kind === 'time' && effect.outcome !== 'no-effect' ? `${(effect.actualTarget ?? effect.target).displayName}${(effect.deltaSeconds ?? 0) < 0 ? '扣除' : '增加'} ${Math.abs(effect.deltaSeconds ?? 0) / 60} 分钟` : effect.detail ?? '未产生时长变化').join('；')}`).join('；') || (row.gift?.recipientId === actorId
+        ? `收到 ${row.gift.notice.sender.displayName}（${row.gift.notice.sender.username}）赠送的「${row.gift.notice.card.name}」` : row.result.message) }));
+  }
+
+  async incomingGifts(teamId: string, recipientId: string) {
+    // Delivery is already durable before pendingWrite is cleared. Opening or
+    // acknowledging a notice never grants a second copy of its card.
+    const rows = await this.actions.find({ teamId, 'gift.recipientId': recipientId, giftReadAt: { $exists: false } })
+      .sort({ at: 1, receiptKey: 1 }).limit(20).lean().exec();
+    return rows.filter(row => row.gift).map(row => ({ id: row.receiptKey, ...row.gift!.notice }));
+  }
+
+  async acknowledgeGifts(teamId: string, recipientId: string, ids: string[]) {
+    const saved = await this.actions.updateMany({ teamId, 'gift.recipientId': recipientId,
+      receiptKey: { $in: ids }, giftReadAt: { $exists: false } }, { $set: { giftReadAt: new Date() } }).exec();
+    return { acknowledged: saved.modifiedCount };
+  }
+
+  async incomingDefenses(teamId: string, recipientId: string) {
+    const rows = await this.actions.find({ teamId, 'defenses.recipientId': recipientId, defenseReadBy: { $ne: recipientId } })
+      .sort({ at: 1, receiptKey: 1 }).limit(20).lean().exec();
+    return rows.flatMap(row => {
+      const delivery = row.defenses?.find(item => item.recipientId === recipientId);
+      return delivery ? [{ id: row.receiptKey, ...delivery.notice }] : [];
+    });
+  }
+
+  async acknowledgeDefenses(teamId: string, recipientId: string, ids: string[]) {
+    const saved = await this.actions.updateMany({ teamId, 'defenses.recipientId': recipientId,
+      receiptKey: { $in: ids }, defenseReadBy: { $ne: recipientId } }, { $addToSet: { defenseReadBy: recipientId } }).exec();
+    return { acknowledged: saved.modifiedCount };
+  }
+
+  async incomingInteractions(teamId: string, recipientId: string) {
+    const rows = await this.actions.find({ teamId, 'interactions.recipientId': recipientId, interactionReadBy: { $ne: recipientId } })
+      .sort({ at: 1, receiptKey: 1 }).limit(20).lean().exec();
+    return rows.flatMap(row => {
+      const delivery = row.interactions?.find(item => item.recipientId === recipientId);
+      return delivery ? [{ id: row.receiptKey, ...delivery.notice }] : [];
+    });
+  }
+
+  async acknowledgeInteractions(teamId: string, recipientId: string, ids: string[]) {
+    const saved = await this.actions.updateMany({ teamId, 'interactions.recipientId': recipientId,
+      receiptKey: { $in: ids }, interactionReadBy: { $ne: recipientId } }, { $addToSet: { interactionReadBy: recipientId } }).exec();
+    return { acknowledged: saved.modifiedCount };
   }
 
   archivedWeeks(teamId: string, filter: { userId?: string; weekKey?: string }) {

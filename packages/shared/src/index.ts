@@ -16,3 +16,4 @@ export * from './utils/enroll';
 export * from './utils/assessment-cohorts';
 export * from './utils/enrollment-year';
 export * from './utils/member-name';
+export * from './utils/weekly-economy';

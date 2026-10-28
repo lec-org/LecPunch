@@ -36,13 +36,28 @@ describe('StatsService', () => {
       {id: 'user-2', displayName: 'B', role: 'member', enrollYear: 2025},
       {id: 'user-3', displayName: 'C', role: 'member', enrollYear: 2025}
     ]);
-    const cards = {getTeamWeekEntertainment: vi.fn().mockResolvedValue({'user-1': 600, 'user-2': 0, 'user-3': -1800})};
+    const cards = {getTeamWeekEntertainment: vi.fn().mockResolvedValue({'user-1': 600, 'user-2': 0, 'user-3': -1800}),
+      getTeamInventoryCounts: vi.fn().mockResolvedValue({'user-1': 3, 'user-2': 1})};
     service = new StatsService(attendanceService as any, usersService as any, cards as any);
     const rows = await service.getTeamCurrentWeekStats('team-1');
     expect(rows.map(row => row.totalDurationSeconds)).toEqual([1200, 1200, -1800]);
     expect(rows.map(row => (row as any).rank)).toEqual([1, 1, 3]);
     expect(rows[2]).toMatchObject({recordedDurationSeconds: 0, entertainmentSeconds: -1800, assessmentComplete: false});
     expect(cards.getTeamWeekEntertainment).toHaveBeenCalledWith('team-1', expect.any(String));
+    expect(rows.map(row => row.cardCount)).toEqual([1, 3, 0]);
+  });
+
+  it('only returns card inventory after validating the signed member key and team', async () => {
+    const cards = { getMemberInventory: vi.fn().mockResolvedValue({ total: 3, items: [{ id: 'card-02', quantity: 3 }] }) };
+    service = new StatsService(attendanceService as any, usersService as any, cards as any);
+    usersService.findByMemberKey.mockResolvedValueOnce(null);
+    await expect(service.getMemberCardInventory('team-1', 'invalid')).rejects.toThrow('成员不存在');
+    usersService.findByMemberKey.mockResolvedValueOnce({ id: 'user-2', teamId: 'team-2', displayName: 'Other' });
+    await expect(service.getMemberCardInventory('team-1', 'foreign')).rejects.toThrow('其他团队');
+    expect(cards.getMemberInventory).not.toHaveBeenCalled();
+    usersService.findByMemberKey.mockResolvedValueOnce({ id: 'user-1', teamId: 'team-1', displayName: 'Member' });
+    expect(await service.getMemberCardInventory('team-1', 'valid')).toMatchObject({ member: { memberKey: 'valid', displayName: 'Member' }, total: 3 });
+    expect(cards.getMemberInventory).toHaveBeenCalledWith('team-1', 'user-1');
   });
 
   it('includes a current card-only week in personal summaries without changing raw time', async () => {
@@ -121,7 +136,9 @@ describe('StatsService', () => {
       {
         $group: {
           _id: '$userId',
-          totalDurationSeconds: { $sum: '$durationSeconds' },
+          totalDurationSeconds: { $sum: { $cond: [{ $and: [
+            { $eq: ['$status', 'completed'] }, { $gte: ['$durationSeconds', 0] }, { $lt: ['$durationSeconds', 18000] }
+          ] }, '$durationSeconds', 0] } },
           sessionsCount: { $sum: 1 }
         }
       }
@@ -154,7 +171,9 @@ describe('StatsService', () => {
       {
         $group: {
           _id: '$userId',
-          totalDurationSeconds: { $sum: '$durationSeconds' },
+          totalDurationSeconds: { $sum: { $cond: [{ $and: [
+            { $eq: ['$status', 'completed'] }, { $gte: ['$durationSeconds', 0] }, { $lt: ['$durationSeconds', 18000] }
+          ] }, '$durationSeconds', 0] } },
           sessionsCount: { $sum: 1 }
         }
       }

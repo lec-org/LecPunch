@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon';
-import { assessmentEnrollYears, requiresWeeklyAssessment } from '@lecpunch/shared';
+import { assessmentEnrollYears, requiresWeeklyAssessment, comprehensiveDurationSeconds } from '@lecpunch/shared';
 
 const ZONE = 'Asia/Shanghai';
 const OBSERVATION_GAP_MS = 5 * 60_000;
@@ -147,10 +147,8 @@ export function observeAssessmentWeek(state: AssessmentWeekState, observedAt: nu
 function comprehensive(totals: AssessmentTotals | undefined): number | null {
   if (!totals || !validSeconds(totals.rawSeconds) || totals.rawSeconds < 0 ||
     !validSeconds(totals.manualSeconds) || !validSeconds(totals.entertainmentSeconds)) return null;
-  const adjusted = totals.rawSeconds + totals.manualSeconds;
-  if (!Number.isSafeInteger(adjusted)) return null;
-  const sum = Math.max(0, adjusted) + totals.entertainmentSeconds;
-  return Number.isSafeInteger(sum) ? sum : null;
+  try { return comprehensiveDurationSeconds(totals.rawSeconds, totals.manualSeconds, totals.entertainmentSeconds); }
+  catch { return null; }
 }
 
 /** Complete/failed/exempt outcomes are immutable. Pending evidence may later become available. */

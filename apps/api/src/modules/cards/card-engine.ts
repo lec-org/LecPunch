@@ -1,30 +1,43 @@
-import { CARD_CATALOG, CardDefinition, CardRarity } from './card-catalog';
+import { ASSESSMENT_TARGET_CARDS, CARD_CATALOG, CardDefinition, CardRarity } from './card-catalog';
 import { DateTime } from 'luxon';
+import { CARD_DRAW_WEIGHTS, CARD_DRAW_WEIGHT_TOTAL, CARD_PITY_LIMITS, assessmentEnrollYears, weeklyDrawPoints, type CardActionEffect } from '@lecpunch/shared';
 
 export interface PlayerWeek {
-  entertainmentSeconds: number; mintedSeconds: number; spentPoints: number;
+  entertainmentSeconds: number; /** Legacy audit only; never credited under comprehensive-v1. */ mintedSeconds: number; spentPoints: number;
   freeUsed: number; bonusDraws: number; accelerationAt?: number;
   immuneUntil?: number; lockedUntil?: number; starvedUntil?: number; boostedSessionIds?: string[];
 }
 export interface PlayerState {
   inventory: Record<string, number>; discovered: string[]; pitySR: number; pitySSR: number;
+  /** Active 24-hour protection belongs to the member, including across weekly archival. */
+  wardUntil?: number;
   weeks: Record<string, PlayerWeek>;
 }
 export interface GameLink { a: string; b: string; week: string; createdBy: string }
 export interface GameState { version: 1; members: Record<string, PlayerState>; links: GameLink[] }
 export type TeamGameState = GameState;
+export type GameEffect = Omit<CardActionEffect, 'target' | 'actualTarget' | 'source'> & { targetId: string; actualTargetId?: string; sourceId?: string; sourceCardId?: string };
+export interface GameDefense {
+  userId: string; attackerId: string; attackCardId: string; defenseCardId: string; outcome: 'blocked' | 'reflected';
+}
 export interface GameContext {
   week: string; now: number;
   players: { id: string; username: string; name: string; enrollYear: number }[];
-  earnedPoints: Record<string, number>;
+  baseSeconds: Record<string, number>;
   sessions?: { id: string; userId: string; checkOutAt: number; durationSeconds: number; weekKey: string }[];
   random: () => number;
+  effects?: GameEffect[];
+  defenses?: GameDefense[];
+  assessmentYears?: number[];
 }
-export interface GameAction { action: 'draw' | 'use' | 'gift'; cardId?: string; targetId?: string; secondTargetId?: string }
+export interface GameAction { action: 'draw' | 'use' | 'gift'; count?: 1 | 10; cardId?: string; targetId?: string; secondTargetId?: string }
 export interface GameActionResult {
   message: string; gainedCardId?: string; gainedCardIds?: string[];
   drawAnimation?: 'blue' | 'purple' | 'gold' | 'radiance'; ssrPity?: boolean;
+  drawCount?: 10; radianceCount?: number;
   affectedUserIds: string[];
+  effects?: GameEffect[];
+  defenses?: GameDefense[];
 }
 
 const rarityValue: Record<CardRarity, number> = { N: 0, R: 1, SR: 2, SSR: 3 };
@@ -53,8 +66,12 @@ function pick<T>(items: T[], context: GameContext): T {
   return items[Math.min(items.length - 1, Math.floor(context.random() * items.length))];
 }
 function drawCard(context: GameContext, minimum: CardRarity = 'N', excludeMystery = false) {
-  const roll = context.random();
-  let rarity: CardRarity = roll < 0.6 ? 'N' : roll < 0.88 ? 'R' : roll < 0.98 ? 'SR' : 'SSR';
+  const roll = Math.floor(context.random() * CARD_DRAW_WEIGHT_TOTAL);
+  let rarity: CardRarity = 'SSR', cumulative = 0;
+  for (const [level, weight] of Object.entries(CARD_DRAW_WEIGHTS)) {
+    cumulative += weight;
+    if (roll < cumulative) { rarity = level as CardRarity; break; }
+  }
   if (rarityValue[rarity] < rarityValue[minimum]) rarity = minimum;
   return pick(CARD_CATALOG.filter(card => card.rarity === rarity && (!excludeMystery || card.id !== 'r-mystery')), context);
 }
@@ -64,14 +81,23 @@ function resolveTarget(state: GameState, context: GameContext, actor: string, ta
   card: CardDefinition, harmful: boolean, single: boolean, reflected = false): string | null {
   const week = getPlayerWeek(state, target, context.week);
   const inventory = state.members[target].inventory;
-  const pierces = card.id === 'sr-redking';
-  if (!pierces && actor !== target && (week.immuneUntil ?? 0) > context.now) return null;
-  if (harmful && !pierces) {
-    if (card.rarity === 'N' && inventory['n-shield'] > 0) { take(state, target, 'n-shield'); return null; }
-    if (rarityValue[card.rarity] <= rarityValue.R && inventory['r-blade'] > 0) { take(state, target, 'r-blade'); return null; }
+  // The SSR ward takes precedence over every incoming card, including red king.
+  if (actor !== target && (week.immuneUntil ?? 0) > context.now) return null;
+  if (harmful) {
+    if (card.rarity === 'N' && inventory['n-shield'] > 0) {
+      take(state, target, 'n-shield');
+      context.defenses?.push({ userId: target, attackerId: actor, attackCardId: card.id, defenseCardId: 'n-shield', outcome: 'blocked' });
+      return null;
+    }
+    if (rarityValue[card.rarity] <= rarityValue.R && inventory['r-blade'] > 0) {
+      take(state, target, 'r-blade');
+      context.defenses?.push({ userId: target, attackerId: actor, attackCardId: card.id, defenseCardId: 'r-blade', outcome: 'blocked' });
+      return null;
+    }
   }
   if (harmful && single && actor !== target && !reflected && inventory['sr-reflect'] > 0) {
     take(state, target, 'sr-reflect');
+    context.defenses?.push({ userId: target, attackerId: actor, attackCardId: card.id, defenseCardId: 'sr-reflect', outcome: 'reflected' });
     // The return is a new direction, but must not recurse into another reflection.
     return resolveTarget(state, context, target, actor, card, true, true, true);
   }
@@ -79,25 +105,28 @@ function resolveTarget(state: GameState, context: GameContext, actor: string, ta
 }
 
 function change(state: GameState, context: GameContext, target: string, delta: number, source: string,
-  card: CardDefinition, mint: boolean, single: boolean, sync = true, positiveBalanceOnly = false,
-  directTransferDebit = false): { target: string | null; delta: number } {
+  card: CardDefinition, single: boolean, sync = true, positiveBalanceOnly = false,
+  directTransferDebit = false, randomTarget = false): { target: string | null; delta: number } {
+  const selection = { ...(randomTarget ? { randomTarget: true } : {}),
+    ...(card.id === 'sr-chain' ? { sourceId: source, sourceCardId: card.id } : {}) };
   delta = Math.trunc(delta);
-  if (!delta) return { target, delta: 0 };
+  if (!delta) { context.effects?.push({ ...selection, targetId: target, kind: 'time', outcome: 'no-effect', deltaSeconds: 0 }); return { target, delta: 0 }; }
   const resolved = directTransferDebit ? target : resolveTarget(state, context, source, target, card, delta < 0, single);
-  if (!resolved) return { target: null, delta: 0 };
+  if (!resolved) { context.effects?.push({ ...selection, targetId: target, kind: 'time', outcome: 'blocked', deltaSeconds: 0 }); return { target: null, delta: 0 }; }
   const week = getPlayerWeek(state, resolved, context.week);
   if (positiveBalanceOnly && delta < 0) delta = -Math.min(-delta, Math.max(0, week.entertainmentSeconds));
-  if (!delta) return { target: resolved, delta: 0 };
+  if (!delta) { context.effects?.push({ ...selection, targetId: target, actualTargetId: resolved, kind: 'time', outcome: 'no-effect', deltaSeconds: 0 }); return { target: resolved, delta: 0 }; }
   week.entertainmentSeconds += delta;
-  if (mint && delta > 0) week.mintedSeconds += delta;
+  context.effects?.push({ ...selection, targetId: target, actualTargetId: resolved, kind: 'time',
+    outcome: resolved === target ? 'applied' : 'reflected', deltaSeconds: delta });
   if (sync) {
     const links = state.links.filter(link => link.week === context.week && (link.a === resolved || link.b === resolved));
     state.links = state.links.filter(link => !links.includes(link));
     for (const link of links) {
       const other = link.a === resolved ? link.b : link.a;
       if (!context.players.some(player => player.id === other)) continue;
-      // One copied change cannot trigger more links or mint a second set of points.
-      change(state, context, other, delta, link.createdBy, getCard('sr-chain'), false, true, false);
+      // One copied change cannot trigger more links. Its net time affects the same quota.
+      change(state, context, other, delta, link.createdBy, getCard('sr-chain'), true, false);
     }
   }
   return { target: resolved, delta };
@@ -105,6 +134,16 @@ function change(state: GameState, context: GameContext, target: string, delta: n
 
 export function advanceGameState(state: GameState, context: GameContext): void {
   for (const player of context.players) getPlayerWeek(state, player.id, context.week);
+  for (const member of Object.values(state.members)) {
+    // Adopt still-live legacy weekly wards before old weeks can be archived,
+    // including inactive members who may return before their protection expires.
+    const until = Object.entries(member.weeks).filter(([key]) => key <= context.week)
+      .reduce((latest, [, value]) => Math.max(latest, value.immuneUntil ?? 0), member.wardUntil ?? 0);
+    if (until > context.now) {
+      member.wardUntil = until;
+      if (member.weeks[context.week]) member.weeks[context.week].immuneUntil = until;
+    } else delete member.wardUntil;
+  }
   // A checkout may have completed before midnight while the client was offline.
   // Reconcile that earned bonus in its original week before expiring temporary states.
   for (const [userId, player] of Object.entries(state.members)) {
@@ -125,7 +164,7 @@ export function advanceGameState(state: GameState, context: GameContext): void {
     week.boostedSessionIds = [...(week.boostedSessionIds ?? []), session.id];
     delete week.accelerationAt;
     change(state, { ...context, week: weekKey, now: session.checkOutAt }, userId,
-      Math.min(1800, Math.floor(session.durationSeconds * 0.15)), userId, getCard('n-acceleration'), true, true);
+      Math.min(1800, Math.floor(session.durationSeconds * 0.15)), userId, getCard('n-acceleration'), true);
     }
   }
   state.links = state.links.filter(link => link.week === context.week);
@@ -133,51 +172,85 @@ export function advanceGameState(state: GameState, context: GameContext): void {
 
 /** Mutate only after the entire action succeeds, so rejected actions spend nothing. */
 export function applyGameAction(state: GameState, actorId: string, action: GameAction, context: GameContext): GameActionResult {
+  if (action.count !== undefined && (action.action !== 'draw' || ![1, 10].includes(action.count))) throw new Error('仅抽卡支持 1 次或 10 次抽取');
   const next = structuredClone(state);
   advanceGameState(next, context);
+  // Do not attribute reconciliation of older checkouts to the current card use.
+  const effects: GameEffect[] = [];
+  const defenses: GameDefense[] = [];
+  context = { ...context, effects, defenses };
   const actor = context.players.find(player => player.id === actorId);
   if (!actor) throw new Error('当前成员没有卡牌访问资格');
   const week = getPlayerWeek(next, actorId, context.week);
   const member = next.members[actorId];
   const peers = context.players.filter(player => player.enrollYear === actor.enrollYear);
   const others = peers.filter(player => player.id !== actorId);
+  const assessmentYears = context.assessmentYears ?? assessmentEnrollYears(context.players.map(player => player.enrollYear));
+  const crossGrade = action.action === 'use' && ASSESSMENT_TARGET_CARDS.includes(action.cardId ?? '');
+  const targetPeers = crossGrade ? context.players.filter(player => assessmentYears.includes(player.enrollYear)) : peers;
+  const targetOthers = targetPeers.filter(player => player.id !== actorId);
   const chooseTarget = (id: string | undefined, allowSelf = false) => {
-    const target = peers.find(player => player.id === id && (allowSelf || player.id !== actorId));
-    if (!target) throw new Error('请选择同年级的有效目标');
+    const target = targetPeers.find(player => player.id === id && (allowSelf || player.id !== actorId));
+    if (!target) throw new Error(crossGrade ? '请选择当前应考成员中的有效目标' : '请选择同年级的有效目标');
     return target.id;
   };
   let gainedCardId: string | undefined;
-  let drawResult: Pick<GameActionResult, 'gainedCardIds' | 'drawAnimation' | 'ssrPity'> | undefined;
+  let drawResult: Pick<GameActionResult, 'gainedCardIds' | 'drawAnimation' | 'ssrPity' | 'drawCount' | 'radianceCount'> | undefined;
   const touched = new Set<string>([actorId]);
   if (action.action === 'draw') {
     if ((week.starvedUntil ?? 0) > context.now) throw new Error('兵粮寸断期间不能获得新卡');
-    if (week.freeUsed < 2) week.freeUsed++;
-    else if (week.bonusDraws > 0) week.bonusDraws--;
-    else {
-      const balance = (context.earnedPoints[actorId] ?? 0) + Math.floor(week.mintedSeconds / 60) - week.spentPoints;
-      if (balance < 60) throw new Error('抽卡积分不足，需要 60 积分');
-      week.spentPoints += 60;
+    const count = action.count ?? 1;
+    const free = Math.min(count, Math.max(0, 2 - week.freeUsed));
+    const gifts = Math.min(count - free, week.bonusDraws);
+    const cost = (count - free - gifts) * 60;
+    const { balance } = weeklyDrawPoints(context.baseSeconds[actorId] ?? 0, week.entertainmentSeconds, week.spentPoints);
+    if (balance < cost && cost > 0) throw new Error(`抽卡积分不足，需要 ${cost} 积分`);
+    const rewards: CardDefinition[] = [];
+    const initialPity = { sr: member.pitySR, ssr: member.pitySSR };
+    let animation: NonNullable<GameActionResult['drawAnimation']> = 'blue', hitPity = false, radianceCount = 0;
+    const animationRank = { blue: 0, purple: 1, gold: 2, radiance: 3 };
+    // All ten draws share this cloned state and one durable receipt. Any failure
+    // rejects the whole batch; payment and pity still advance one draw at a time.
+    for (let index = 0; index < count; index++) {
+      if (week.freeUsed < 2) week.freeUsed++;
+      else if (week.bonusDraws > 0) week.bonusDraws--;
+      else {
+        week.spentPoints += 60;
+      }
+      const ssrPity = member.pitySSR >= CARD_PITY_LIMITS.ssr - 1;
+      const radiance = count === 10 && ssrPity && context.random() < 0.3;
+      const ssrPool = CARD_CATALOG.filter(card => card.rarity === 'SSR');
+      const cards = [ssrPity ? pick(ssrPool, context) : drawCard(context, member.pitySR >= CARD_PITY_LIMITS.sr - 1 ? 'SR' : 'N')];
+      const card = cards[0];
+      member.pitySSR = card.rarity === 'SSR' ? 0 : member.pitySSR + 1;
+      member.pitySR = rarityValue[card.rarity] >= rarityValue.SR ? 0 : member.pitySR + 1;
+      rewards.push(...cards); hitPity ||= ssrPity; if (radiance) radianceCount++;
+      const selectedAnimation = radiance ? 'radiance' : card.rarity === 'SSR' ? 'gold' : card.rarity === 'SR' ? 'purple' : 'blue';
+      if (animationRank[selectedAnimation] > animationRank[animation]) animation = selectedAnimation;
     }
-    const ssrPity = member.pitySSR >= 49;
-    const radiance = ssrPity && context.random() < 0.3;
-    const ssrPool = CARD_CATALOG.filter(card => card.rarity === 'SSR');
-    // Radiance belongs only to the hard-pity draw. Both rewards are independent
-    // uniform SSR selections, but payment and the pity reset still happen once.
-    const cards = ssrPity
-      ? Array.from({length: radiance ? 2 : 1}, () => pick(ssrPool, context))
-      : [drawCard(context, member.pitySR >= 9 ? 'SR' : 'N')];
-    const card = cards[0];
-    member.pitySSR = card.rarity === 'SSR' ? 0 : member.pitySSR + 1;
-    member.pitySR = rarityValue[card.rarity] >= rarityValue.SR ? 0 : member.pitySR + 1;
-    for (const reward of cards) receive(next, actorId, reward.id);
-    gainedCardId = card.id;
-    drawResult = { gainedCardIds: cards.map(reward => reward.id), ssrPity,
-      drawAnimation: radiance ? 'radiance' : card.rarity === 'SSR' ? 'gold' : card.rarity === 'SR' ? 'purple' : 'blue' };
+    if (radianceCount) {
+      // Upgrade an existing non-SSR slot; a batch always contains exactly ten
+      // cards. Already-SSR rewards are never replaced, including the hard pity.
+      const replacement = rewards.findIndex(card => card.rarity !== 'SSR');
+      if (replacement >= 0) rewards[replacement] = pick(CARD_CATALOG.filter(card => card.rarity === 'SSR'), context);
+      // The visible final order is also the pity order, including the upgrade.
+      // This covers hard pity in the final slot without an eleventh reward.
+      member.pitySR = initialPity.sr; member.pitySSR = initialPity.ssr;
+      for (const card of rewards) {
+        member.pitySSR = card.rarity === 'SSR' ? 0 : member.pitySSR + 1;
+        member.pitySR = rarityValue[card.rarity] >= rarityValue.SR ? 0 : member.pitySR + 1;
+      }
+    }
+    for (const reward of rewards) receive(next, actorId, reward.id);
+    gainedCardId = rewards[0].id;
+    drawResult = { gainedCardIds: rewards.map(reward => reward.id), ssrPity: hitPity, drawAnimation: animation,
+      ...(count === 10 ? { drawCount: 10, radianceCount } : {}) };
   } else if (action.action === 'gift') {
     const card = getCard(action.cardId ?? '');
     const target = chooseTarget(action.targetId);
     if ((getPlayerWeek(next, target, context.week).starvedUntil ?? 0) > context.now) throw new Error('目标兵粮寸断期间不能接收新卡');
     take(next, actorId, card.id); receive(next, target, card.id); touched.add(target);
+    effects.push({ targetId: target, kind: 'cards', outcome: 'applied', detail: '收到一张卡片，已加入库存并解锁图鉴' });
   } else if (action.action === 'use') {
     if ((week.lockedUntil ?? 0) > context.now) throw new Error('乐不思蜀期间不能主动使用卡牌');
     const card = getCard(action.cardId ?? '');
@@ -186,37 +259,45 @@ export function applyGameAction(state: GameState, actorId: string, action: GameA
     if (card.id === 'ssr-invincible' && (week.immuneUntil ?? 0) > context.now) throw new Error('无懈可击仍在生效，不能叠加');
     if (card.id === 'r-mystery' && (week.starvedUntil ?? 0) > context.now) throw new Error('兵粮寸断期间不能获得新卡');
     take(next, actorId, card.id);
-    const update = (target: string, delta: number, mint = false, single = true, positiveOnly = false) => {
-      touched.add(target); return change(next, context, target, delta, actorId, card, mint, single, true, positiveOnly);
+    const update = (target: string, delta: number, single = true, positiveOnly = false, randomTarget = false) => {
+      touched.add(target); return change(next, context, target, delta, actorId, card, single, true, positiveOnly, false, randomTarget);
     };
     switch (card.id) {
-      case 'n-acceleration': week.accelerationAt = context.now; break;
-      case 'n-reduce': update(pick(others, context).id, -1800); break;
-      case 'n-gamble': if (context.random() < 0.5) update(actorId, -1800); break;
-      case 'r-add': update(chooseTarget(action.targetId ?? actorId, true), 1800, true); break;
+      case 'n-acceleration': week.accelerationAt = context.now; effects.push({ targetId: actorId, kind: 'status', outcome: 'applied', detail: '加速已就绪，等待下一次有效签退' }); break;
+      case 'n-reduce': update(pick(others, context).id, -1800, true, false, true); break;
+      case 'n-gamble': if (context.random() < 0.5) {
+        effects.push({ targetId: actorId, randomTarget: true, kind: 'judgement', outcome: 'applied', detail: '自身判定为不利结果，先结算适用防御，再决定是否扣除 30 分钟' });
+        update(actorId, -1800, true, false, true);
+      }
+        else effects.push({ targetId: actorId, randomTarget: true, kind: 'judgement', outcome: 'no-effect', detail: '判定安全，没有扣除时长' }); break;
+      case 'r-add': update(chooseTarget(action.targetId ?? actorId, true), 1800); break;
       case 'r-steal': {
-        const victim = pick(others, context).id;
+        const victim = chooseTarget(action.targetId);
         const stolen = update(victim, -1800);
         if (stolen.delta < 0) update(stolen.target === actorId ? victim : actorId, -stolen.delta);
         break;
       }
       case 'r-mystery': {
         const replacement = drawCard(context, 'N', true); receive(next, actorId, replacement.id);
+        effects.push({ targetId: actorId, kind: 'cards', outcome: 'applied', detail: '随机换卡已加入库存' });
         gainedCardId = replacement.id; break;
       }
       case 'r-charity': {
-        const recipients = others.filter(player => (getPlayerWeek(next, player.id, context.week).immuneUntil ?? 0) <= context.now);
+        const recipients = targetOthers.filter(player => (getPlayerWeek(next, player.id, context.week).immuneUntil ?? 0) <= context.now);
         if (!recipients.length || week.entertainmentSeconds <= 0) throw new Error('没有可接收成员或正娱乐余额');
         const share = Math.floor(Math.floor(week.entertainmentSeconds * 0.1) / recipients.length);
         if (!share) throw new Error('可分配时长不足一秒');
         // The transfer debit is part of the gift, not an attack on its author.
-        change(next, context, actorId, -share * recipients.length, actorId, card, false, false, true, false, true);
-        for (const recipient of recipients) update(recipient.id, share, false, false);
+        change(next, context, actorId, -share * recipients.length, actorId, card, false, true, false, true);
+        for (const recipient of targetOthers) update(recipient.id, share, false);
         break;
       }
       case 'r-skip': case 'sr-famine': {
         const target = chooseTarget(action.targetId);
         const resolved = resolveTarget(next, context, actorId, target, card, true, true);
+        effects.push({ targetId: target, ...(resolved ? { actualTargetId: resolved } : {}), kind: 'status',
+          outcome: !resolved ? 'blocked' : resolved === target ? 'applied' : 'reflected',
+          detail: card.id === 'r-skip' ? '暂停主动用卡 1 小时' : '暂停获得新卡 3 小时' });
         if (resolved) {
           const targetWeek = getPlayerWeek(next, resolved, context.week);
           if (card.id === 'r-skip') targetWeek.lockedUntil = context.now + 3600000;
@@ -227,29 +308,43 @@ export function applyGameAction(state: GameState, actorId: string, action: GameA
       }
       case 'r-thief': {
         const receiver = chooseTarget(action.targetId);
-        const candidates = others.filter(player => player.id !== receiver);
+        const candidates = targetOthers.filter(player => player.id !== receiver);
         if (!candidates.length) throw new Error('没有可转移的供给方');
         const donor = pick(candidates, context).id;
         const amount = Math.min(1800, Math.max(0, getPlayerWeek(next, donor, context.week).entertainmentSeconds));
         if (!amount) throw new Error('供给方没有正娱乐余额');
-        if ((getPlayerWeek(next, receiver, context.week).immuneUntil ?? 0) > context.now) break;
-        const stolen = update(donor, -amount, false, true, true);
-        if (stolen.delta < 0) update(receiver, -stolen.delta, false);
+        if ((getPlayerWeek(next, receiver, context.week).immuneUntil ?? 0) > context.now) {
+          effects.push({ targetId: receiver, kind: 'time', outcome: 'blocked', detail: '免疫阻止接收时长' },
+            { targetId: donor, randomTarget: true, kind: 'time', outcome: 'no-effect', deltaSeconds: 0, detail: '接收者处于免疫保护，本次没有从你转出时长' }); break;
+        }
+        const stolen = update(donor, -amount, true, true, true);
+        if (stolen.delta < 0) update(receiver, -stolen.delta);
+        else effects.push({ targetId: receiver, kind: 'time', outcome: 'no-effect', deltaSeconds: 0,
+          detail: '本次转移未产生可到账时长；供给方可能已防御或没有实际可转移余额' });
         break;
       }
-      case 'sr-angel': for (const peer of peers) update(peer.id, 1800, true, false); break;
+      case 'sr-angel': for (const peer of peers) update(peer.id, 1800, false); break;
       case 'sr-chain': {
         const a = chooseTarget(action.targetId, true), b = chooseTarget(action.secondTargetId, true);
         if (a === b) throw new Error('连环需要两名不同成员');
         if (next.links.some(link => link.week === context.week && [link.a, link.b].some(id => id === a || id === b))) throw new Error('目标已有未触发连环');
-        if (resolveTarget(next, context, actorId, a, card, false, true) && resolveTarget(next, context, actorId, b, card, false, true)) {
+        const resolvedA = resolveTarget(next, context, actorId, a, card, false, true);
+        const resolvedB = resolvedA ? resolveTarget(next, context, actorId, b, card, false, true) : null;
+        const linked = Boolean(resolvedA && resolvedB);
+        effects.push({ targetId: a, kind: 'status', outcome: linked ? 'applied' : resolvedA ? 'no-effect' : 'blocked', detail: linked ? '连环已建立' : '连环未建立' },
+          { targetId: b, kind: 'status', outcome: linked ? 'applied' : !resolvedA ? 'no-effect' : 'blocked', detail: linked ? '连环已建立' : '连环未建立' });
+        if (linked) {
           next.links.push({a, b, week: context.week, createdBy: actorId}); touched.add(a); touched.add(b);
         }
         break;
       }
       case 'sr-lightning':
         for (const other of [...others].sort((a, b) => a.username < b.username ? -1 : a.username > b.username ? 1 : a.id.localeCompare(b.id))) {
-          if (context.random() < 0.5) { update(other.id, -3600); break; }
+          if (context.random() < 0.5) {
+            effects.push({ targetId: other.id, randomTarget: true, kind: 'judgement', outcome: 'applied', detail: '雷电判定命中（逐人独立 50% 判定）' });
+            update(other.id, -3600, true, false, true); break;
+          }
+          effects.push({ targetId: other.id, randomTarget: true, kind: 'judgement', outcome: 'no-effect', detail: '雷电判定未命中（逐人独立 50% 判定），未扣除时长' });
         }
         break;
       case 'sr-invasion':
@@ -257,24 +352,28 @@ export function applyGameAction(state: GameState, actorId: string, action: GameA
           const inventory = next.members[other.id].inventory;
           const nCards = CARD_CATALOG.filter(item => item.rarity === 'N').flatMap(item => Array.from({length: inventory[item.id] ?? 0}, () => item.id));
           const resolved = resolveTarget(next, context, actorId, other.id, card, true, false);
-          if (!resolved) continue;
-          if (nCards.length) take(next, other.id, pick(nCards, context)); else update(other.id, -900, false, false);
+          if (!resolved) { effects.push({ targetId: other.id, kind: 'cards', outcome: 'blocked' }); continue; }
+          if (nCards.length) { take(next, other.id, pick(nCards, context)); effects.push({ targetId: other.id, kind: 'cards', outcome: 'applied', detail: '随机弃置 1 张 N 级卡片' }); }
+          else update(other.id, -900, false);
           touched.add(other.id);
         }
         break;
       case 'sr-redking': update(chooseTarget(action.targetId), -1800); break;
       case 'ssr-harvest':
-        for (const peer of peers) if (resolveTarget(next, context, actorId, peer.id, card, false, false)) {
-          getPlayerWeek(next, peer.id, context.week).bonusDraws += 2; touched.add(peer.id);
+        for (const peer of peers) {
+          const resolved = resolveTarget(next, context, actorId, peer.id, card, false, false);
+          effects.push({ targetId: peer.id, kind: 'status', outcome: resolved ? 'applied' : 'blocked', detail: '获得 2 次当周抽卡机会' });
+          if (resolved) { getPlayerWeek(next, peer.id, context.week).bonusDraws += 2; touched.add(peer.id); }
         }
         break;
-      case 'ssr-invincible': week.immuneUntil = context.now + 24 * 3600000; break;
+      case 'ssr-invincible': member.wardUntil = week.immuneUntil = context.now + 24 * 3600000;
+        effects.push({ targetId: actorId, kind: 'status', outcome: 'applied', detail: '无懈可击已生效，最长持续 24 小时' }); break;
       case 'ssr-arrows': {
         const target = chooseTarget(action.targetId);
         let removed = 0;
         for (const peer of others) {
           const amount = Math.min(900, Math.floor(Math.max(0, getPlayerWeek(next, peer.id, context.week).entertainmentSeconds) * 0.1));
-          removed -= update(peer.id, -amount, false, false).delta;
+          removed -= update(peer.id, -amount, false).delta;
         }
         update(target, -Math.min(3600, Math.floor(removed / 2))); break;
       }
@@ -282,6 +381,6 @@ export function applyGameAction(state: GameState, actorId: string, action: GameA
     }
   } else throw new Error('不支持的卡牌操作');
   Object.assign(state, next);
-  return { message: action.action === 'draw' ? '抽卡成功' : action.action === 'gift' ? '卡片已赠送' : '卡片已结算',
-    ...(gainedCardId ? {gainedCardId} : {}), ...drawResult, affectedUserIds: [...touched] };
+  return { message: action.action === 'draw' ? action.count === 10 ? `十连抽成功，共获得 ${drawResult!.gainedCardIds!.length} 张卡片` : '抽卡成功' : action.action === 'gift' ? '卡片已赠送' : '卡片已结算',
+    ...(gainedCardId ? {gainedCardId} : {}), ...drawResult, affectedUserIds: [...touched], ...(effects.length ? { effects } : {}), ...(defenses.length ? { defenses } : {}) };
 }

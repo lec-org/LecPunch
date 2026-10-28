@@ -35,7 +35,7 @@ export const AdminDurationPage = () => {
   const filtered = members.filter(m => m.status === 'active' && [m.displayName, m.name, m.username, m.studentNumber].some(s => s?.toLowerCase().includes(search.toLowerCase())));
   return <div className="mx-auto max-w-4xl p-8 space-y-5">
     <h1 className="text-2xl font-bold">当前周时长调整</h1>
-    <p className="text-sm text-gray-500">仅调整当前周统计，不改原始打卡记录或原始积分。每次操作保留操作者、原因和结果。</p>
+    <p className="text-sm text-gray-500">调整计入本周综合时长，同步影响考核、排行与抽卡积分额度，每满 1 分钟对应 1 积分。已有本周补时自动计入；已消费积分保留，不改原始打卡记录，每次操作保留审计。</p>
     <form className="rounded-xl border bg-white p-5 space-y-4" onSubmit={async e => {
       e.preventDefault(); if (!context || !validAmount || busy || refreshNeeded || projected < 0) return;
       setBusy(true); setError(''); setSuccess('');

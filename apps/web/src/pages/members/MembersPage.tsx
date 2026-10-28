@@ -1,13 +1,14 @@
 import { formatMemberName } from '@lecpunch/shared';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, Eye, Search, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Eye, Layers3, Search, X } from 'lucide-react';
 import { Avatar, Badge, Button, DataTable, type ColumnDef } from '@lecpunch/ui';
 import type { AssessmentMemberSummaries, TeamWeeklyStatItem } from '@lecpunch/shared';
 import { useAuthStore } from '@/app/store/auth-store';
 import { getAssessmentMemberSummaries } from '@/features/assessment/assessment.api';
 import { AssessmentHistoryDialog } from '@/features/assessment/AssessmentHistoryDialog';
 import { MemberWeeklyAssessmentBadge } from '@/features/assessment/MemberWeeklyAssessmentBadge';
+import { MemberCardInventoryDialog } from '@/features/cards/MemberCardInventoryDialog';
 import { getTeamCurrentWeekStats } from '@/features/stats/stats.api';
 import { useAsyncData } from '@/shared/hooks/useAsyncData';
 import { getApiErrorMessage } from '@/shared/lib/api-error';
@@ -157,6 +158,21 @@ const MembersWorkspace = () => {
     fetchAssessmentSummaries, [], { initialData: null as AssessmentMemberSummaries | null }
   );
   const [selectedAssessment, setSelectedAssessment] = useState<{ memberKey: string; displayName: string } | null>(null);
+  const [selectedInventory, setSelectedInventory] = useState<{ memberKey: string; displayName: string } | null>(null);
+  const inventoryReturnFocus = useRef<{ memberKey: string; scope: MembersScope } | null>(null);
+  const closeInventory = () => {
+    if (selectedInventory) inventoryReturnFocus.current = { memberKey: selectedInventory.memberKey, scope };
+    setSelectedInventory(null); refresh();
+  };
+  useEffect(() => {
+    if (loading || !inventoryReturnFocus.current) return;
+    const previous = inventoryReturnFocus.current; inventoryReturnFocus.current = null;
+    // Reloading replaces table rows; restore the new opener only if focus has not moved elsewhere.
+    if (previous.scope === scope && document.activeElement === document.body) {
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[data-inventory-key]'))
+        .find(button => button.dataset.inventoryKey === previous.memberKey)?.focus();
+    }
+  }, [loading, members, scope]);
   const failedCounts = useMemo(() => new Map(assessment?.items.map(item => [item.memberKey, item.failedWeeksCount]) ?? []), [assessment]);
   const requiredYears = assessment?.requiredEnrollYears ?? [];
   const requiresAssessment = (member: TeamWeeklyStatItem) => requiredYears.includes(member.enrollYear);
@@ -308,6 +324,14 @@ const MembersWorkspace = () => {
       headerClassName: 'normal-case tracking-normal',
       cellClassName: 'whitespace-nowrap',
       render: (value) => `${value} 次`
+    },
+    {
+      key: '_cards',
+      header: <span className="whitespace-nowrap normal-case tracking-normal">持有卡片</span>,
+      cellClassName: 'whitespace-nowrap',
+      render: (_, row) => row.cardCount === undefined ? <span className="text-xs text-gray-500">暂不可用</span> :
+        <button type="button" data-inventory-key={row.memberKey} aria-label={`查看${formatMemberName(row)}的卡牌库存，共${row.cardCount}张`} onClick={() => setSelectedInventory({ memberKey: row.memberKey, displayName: formatMemberName(row) })}
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg px-2 py-2 text-sm text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600"><Layers3 size={15} aria-hidden="true" />{row.cardCount} 张</button>
     },
     {
       key: '_weeklyAssessment',
@@ -520,6 +544,7 @@ const MembersWorkspace = () => {
         </div>
       )}
       {selectedAssessment && <AssessmentHistoryDialog key={selectedAssessment.memberKey} memberKey={selectedAssessment.memberKey} displayName={selectedAssessment.displayName} onClose={() => setSelectedAssessment(null)} />}
+      {selectedInventory && <MemberCardInventoryDialog key={selectedInventory.memberKey} memberKey={selectedInventory.memberKey} displayName={selectedInventory.displayName} onClose={closeInventory} />}
     </div>
   );
 };

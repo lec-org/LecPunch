@@ -7,8 +7,9 @@ import { useAuthStore } from '@/app/store/auth-store';
 import { createUserFixture } from '@/test/user-fixture';
 
 const mocks = vi.hoisted(() => ({
-  getTeamCurrentWeekStats: vi.fn(), getAssessmentMemberSummaries: vi.fn(), getAssessmentHistory: vi.fn()
+  getTeamCurrentWeekStats: vi.fn(), getAssessmentMemberSummaries: vi.fn(), getAssessmentHistory: vi.fn(), getMemberCardInventory: vi.fn()
 }));
+vi.mock('@/features/cards/cards.api', () => ({ getMemberCardInventory: mocks.getMemberCardInventory }));
 
 vi.mock('@/features/assessment/assessment.api', () => ({
   getAssessmentMemberSummaries: mocks.getAssessmentMemberSummaries, getAssessmentHistory: mocks.getAssessmentHistory
@@ -35,6 +36,64 @@ describe('MembersPage', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('opens physical card counts and grouped inventory without requesting card artwork', async () => {
+    mocks.getTeamCurrentWeekStats.mockResolvedValue(members.map((member, index) => ({ ...member, cardCount: index ? 0 : 3 })));
+    mocks.getMemberCardInventory.mockResolvedValue({ member: { memberKey: 'alpha', displayName: '甲' }, total: 3,
+      items: [{ id: 'card-02', name: '减时长', rarity: 'N', quantity: 3, type: '随机扣时', effect: '随机扣除30分钟。', detail: '允许负数。' }] });
+    render(<MemoryRouter><MembersPage /></MemoryRouter>);
+    const opener = await screen.findByRole('button', { name: '查看甲的卡牌库存，共3张' });
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole('dialog', { name: '甲的卡牌库存' });
+    expect(await within(dialog).findByText('减时长')).toBeInTheDocument();
+    expect(within(dialog).getByText('×3')).toBeInTheDocument();
+    expect(within(dialog).getByText(/当前持有 3 张 · 1 种/)).toBeInTheDocument();
+    expect(mocks.getMemberCardInventory).toHaveBeenCalledWith('alpha', expect.any(AbortSignal));
+    expect(within(dialog).queryByRole('img')).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '关闭成员卡牌库存' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '查看甲的卡牌库存，共3张' })).toHaveFocus());
+  });
+  it('keeps inventory failures distinct from an empty inventory and retries locally', async () => {
+    mocks.getTeamCurrentWeekStats.mockResolvedValue(members.map(member => ({ ...member, cardCount: 0 })));
+    mocks.getMemberCardInventory.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ member: { memberKey: 'alpha', displayName: '甲' }, total: 0, items: [] });
+    render(<MemoryRouter><MembersPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole('button', { name: '查看甲的卡牌库存，共0张' }));
+    const dialog = await screen.findByRole('dialog', { name: '甲的卡牌库存' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('卡牌库存读取失败');
+    expect(within(dialog).queryByText(/当前没有持有/)).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '重新读取库存' }));
+    expect(await within(dialog).findByText(/当前没有持有/)).toBeInTheDocument();
+  });
+
+  it.each(['button', 'escape'])('refreshes the table count and duration after closing inventory by %s', async close => {
+    mocks.getTeamCurrentWeekStats.mockResolvedValueOnce(members.map(member => ({ ...member, cardCount: 3 })))
+      .mockResolvedValue(members.map(member => ({ ...member, cardCount: 4, totalDurationSeconds: 10800 })));
+    mocks.getMemberCardInventory.mockResolvedValue({ member: { memberKey: 'alpha', displayName: '甲' }, total: 4,
+      items: [{ id: 'card-02', name: '减时长', rarity: 'N', quantity: 4, type: '随机扣时', effect: '扣时', detail: '允许负数' }] });
+    render(<MemoryRouter><MembersPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole('button', { name: '查看甲的卡牌库存，共3张' }));
+    const dialog = await screen.findByRole('dialog', { name: '甲的卡牌库存' });
+    expect(await within(dialog).findByText(/当前持有 4 张/)).toBeInTheDocument();
+    if (close === 'button') await userEvent.click(within(dialog).getByRole('button', { name: '关闭成员卡牌库存' }));
+    else { const event = new Event('cancel', { bubbles: true, cancelable: true }); await act(async () => { dialog.dispatchEvent(event); }); }
+    expect(await screen.findByRole('button', { name: '查看甲的卡牌库存，共4张' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看甲的卡牌库存，共4张' })).toHaveFocus();
+    expect(mocks.getTeamCurrentWeekStats).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByText('03:00:00').length).toBeGreaterThan(0);
+  });
+  it('does not steal focus if the user moves to a filter during the inventory-close reload', async () => {
+    let resolve!: (value: unknown) => void;
+    mocks.getTeamCurrentWeekStats.mockResolvedValueOnce(members.map(member => ({ ...member, cardCount: 3 })))
+      .mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    mocks.getMemberCardInventory.mockResolvedValue({ member: { memberKey: 'alpha', displayName: '甲' }, total: 0, items: [] });
+    render(<MemoryRouter><MembersPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole('button', { name: '查看甲的卡牌库存，共3张' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '关闭成员卡牌库存' }));
+    const input = screen.getByRole('textbox', { name: 'member-search' }); input.focus();
+    await act(async () => { resolve(members.map(member => ({ ...member, cardCount: 4 }))); });
+    expect(await screen.findByRole('button', { name: '查看甲的卡牌库存，共4张' })).toBeInTheDocument();
+    expect(input).toHaveFocus();
   });
 
   it('shows gray/green progress, true zero and cumulative failures with Sunday details', async () => {

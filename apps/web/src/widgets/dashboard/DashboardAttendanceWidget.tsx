@@ -87,7 +87,7 @@ const DashboardAttendanceWidgetComponent = () => {
             <span className={selectedWeekManualAdjustment > 0 ? 'ml-1 font-semibold text-emerald-700' : 'ml-1 font-semibold text-rose-700'}>
               {selectedWeekManualAdjustment >= 0 ? '+' : '-'}{formatDuration(Math.abs(selectedWeekManualAdjustment))}
             </span>
-            （{selectedWeekAdjustmentsCount} 条）。积分仍按原始打卡计算。
+            （{selectedWeekAdjustmentsCount} 条）。净调整每满 1 分钟同步计入 1 抽卡积分，扣减同步扣回。
           </p>
         ) : null}
 
