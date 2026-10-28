@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PointsController } from './points.controller';
 
 describe('PointsController', () => {
@@ -28,4 +29,25 @@ describe('PointsController', () => {
     await expect(controller.getMine({} as any, { week: '2026-W99' })).rejects.toThrow('POINTS_WEEK_INVALID');
     expect(cards.getWeekPoints).not.toHaveBeenCalled();
   });
+  it.each([new ServiceUnavailableException('card settlement unavailable'), new ForbiddenException('not a card participant')])(
+    'preserves the audit without inventing draw points when card lookup returns %s', async error => {
+      const user = { userId: 'user-1', teamId: 'team-1', role: 'member' } as any;
+      const audit = { totalPoints: 60, weekPoints: 20, week: '2026-W36', ledgerScope: 'attendance-audit', records: [{ points: 20 }] };
+      pointsService.getMyPoints.mockResolvedValue(audit); cards.getWeekPoints.mockRejectedValueOnce(error);
+      const result = await controller.getMine(user, { week: '2026-W36' });
+      expect(result).toEqual(audit); expect(result).not.toHaveProperty('drawPoints');
+      expect(cards.getWeekPoints).toHaveBeenCalledWith(user, '2026-08-31');
+    });
+  it.each([new Error('database failure'), new BadRequestException('invalid game data'), new NotFoundException('missing game')])(
+    'does not hide an unexpected card error: %s', async error => {
+      pointsService.getMyPoints.mockResolvedValue({ totalPoints: 60, week: '2026-W36' });
+      cards.getWeekPoints.mockRejectedValueOnce(error);
+      await expect(controller.getMine({} as any, {})).rejects.toBe(error);
+    });
+  it.each([new ForbiddenException('audit access denied'), new ServiceUnavailableException('audit unavailable')])(
+    'does not suppress an audit-service error: %s', async error => {
+      pointsService.getMyPoints.mockRejectedValueOnce(error);
+      await expect(controller.getMine({} as any, {})).rejects.toBe(error);
+      expect(cards.getWeekPoints).not.toHaveBeenCalled();
+    });
 });

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -35,6 +35,7 @@ export function seededCardRandom(secret: string, key: string): () => number {
 
 @Injectable()
 export class CardsService {
+  private readonly logger = new Logger(CardsService.name);
   constructor(
     @InjectModel(CardGame.name) private readonly games: Model<CardGameDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
@@ -60,7 +61,10 @@ export class CardsService {
       this.attendance.find({ teamId, weekKey: { $in: [...sessionWeeks] }, status: 'completed', durationSeconds: { $gt: 0, $lt: 18000 } })
         .select('_id userId weekKey checkOutAt durationSeconds').lean().exec()
     ]);
-    const assessmentYears = await readAssessmentCohorts(this.assessmentWeeks, teamId, allMembers.map(member => member.enrollYear), week);
+    const assessmentYears = await readAssessmentCohorts(this.assessmentWeeks, teamId, allMembers.map(member => member.enrollYear), week, {
+      strict: false,
+      onInvalidData: source => this.logger.warn({ message: 'Invalid cohort data in card context', teamId, week, source })
+    });
     return { now, week, random, assessmentYears,
       players: members.map(member => ({ id: String(member._id), username: member.username, name: member.displayName, enrollYear: member.enrollYear })),
       baseSeconds: earned,

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createConnection, type Connection, type Model } from 'mongoose';
+import { createConnection, Types, type Connection, type Model } from 'mongoose';
 import { randomUUID, createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { AssessmentService } from '../assessment/assessment.service';
 import { AssessmentWeekSchema } from '../assessment/schemas/assessment.schema';
 import { CardGameSchema } from './schemas/card-game.schema';
@@ -434,11 +434,40 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     expect(await weeks.countDocuments()).toBe(1);
   });
   it.each([2062, '2062', 'invalid', 2026.5, null])('returns typed unavailable for malformed saved cohort evidence %s', async year => {
+    const log = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     await assessmentWeeks.collection.insertOne({ teamId: actor.teamId, weekKey: '2026-01-05', state: { requiredEnrollYears: [year] } });
+    const before = await assessmentWeeks.findOne().lean();
+    const view = await service.getMe(actor);
+    expect(view.requiredEnrollYears).toEqual([]);
+    await service.action(actor, { requestKey: randomUUID(), action: 'draw' });
+    expect((await service.getTeamWeekEntertainment(actor.teamId, view.week))[actor.userId]).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ teamId: actor.teamId, source: 'persisted' }));
     const memberService = { listTeamMembers: async () => [{ id: actor.userId, enrollYear: actor.enrollYear }] };
     const assessment = new AssessmentService(assessmentWeeks, {} as any, users, attendance, new ConfigService(), memberService as any, {} as any, service, {} as any);
     await expect(assessment.memberSummaries(actor)).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(await assessmentWeeks.countDocuments()).toBe(1);
+    expect(await assessmentWeeks.findOne().lean()).toEqual(before);
+  });
+
+  it('keeps current member statistics and cards readable with a disabled legacy invalid-year row while assessment stays strict', async () => {
+    const log = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    await users.collection.insertOne({ _id: new Types.ObjectId('6a0000000000000000000099'), teamId: actor.teamId,
+      username: 'bad.legacy', displayName: 'Legacy', status: 'disabled', role: 'member', enrollYear: 2062 });
+    const view = await service.getMe(actor);
+    expect(view.requiredEnrollYears).toEqual([2026, 2025]);
+    expect(view.players.some(player => player.username === 'bad.legacy')).toBe(false);
+    await games.updateOne({}, { $set: { [`state.members.${actor.userId}.weeks.${view.week}.entertainmentSeconds`]: 1234 } });
+    const members = (await users.find({ teamId: actor.teamId }).lean()).map(member => ({ id: String(member._id),
+      displayName: member.displayName, role: member.role, enrollYear: member.enrollYear }));
+    const memberService = { listTeamMembers: async () => members, getMemberKey: (id: string) => `opaque-${id}` };
+    const stats = new StatsService({ getModel: () => attendance, getManualAdjustmentSummaries: async () => new Map() } as any, memberService as any, service);
+    const rows = await stats.getTeamCurrentWeekStats(actor.teamId);
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.memberKey === `opaque-${actor.userId}`)?.entertainmentSeconds).toBe(1234);
+    const assessment = new AssessmentService(assessmentWeeks, {} as any, users, attendance, new ConfigService(), memberService as any, {} as any, service, stats);
+    await expect(assessment.memberSummaries(actor)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(await assessmentWeeks.countDocuments()).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ teamId: actor.teamId, source: 'members' }));
   });
 
   it('rejects invalid enrollment years at the real model boundary', async () => {

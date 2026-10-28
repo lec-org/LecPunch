@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Query, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.type';
@@ -18,6 +18,11 @@ export class PointsController {
     // of card state, so attendance -> PointsModule never introduces a module cycle.
     const audit = await this.pointsService.getMyPoints(user, query.week);
     const weekKey = parseIsoWeekKey(audit.week)!.toFormat('yyyy-LL-dd');
-    return { ...audit, drawPoints: { weekKey, ...await this.cards.getWeekPoints(user, weekKey) } };
+    try {
+      return { ...audit, drawPoints: { weekKey, ...await this.cards.getWeekPoints(user, weekKey) } };
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException || error instanceof ForbiddenException) return audit;
+      throw error;
+    }
   }
 }

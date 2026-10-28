@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
-import { Logger } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { CardsService, cardActionHash, seededCardRandom } from './cards.service';
 import { CardCapacityException, CardStorageService } from './card-storage.service';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AuthUser } from '../auth/types/auth-user.type';
+import { getWeekKey } from '../../common/utils/time.util';
 
 const actor: AuthUser = { userId: '6a0000000000000000000011', teamId: '6a0000000000000000000001', role: 'member', username: 'test.alpha', displayName: '测试成员', enrollYear: 2025 };
 const query = (get: () => any): any => {
@@ -87,9 +88,14 @@ function fixture() {
   const receipts = archiveModel(['teamId', 'receiptKey']), weeks = archiveModel(['teamId', 'userId', 'weekKey']);
   const storage = new CardStorageService(games as any, receipts.model, weeks.model);
   let cohortEvidence: any[] = [];
-  const service = new CardsService(games as any, users as any, points as any, attendance as any, config, storage, { aggregate: () => query(() => cohortEvidence) } as any);
+  let cohortError: unknown;
+  const service = new CardsService(games as any, users as any, points as any, attendance as any, config, storage, { aggregate: () => query(() => {
+    if (cohortError) throw cohortError;
+    return cohortEvidence;
+  }) } as any);
   return { service, storage, games, receipts, weeks, points, document: () => document, members,
     setCohortEvidence: (rows: any[]) => { cohortEvidence = rows; },
+    setCohortError: (error: unknown) => { cohortError = error; },
     setAttendance: (rows: any[]) => { attendanceRows = rows; }, attendanceFilter: () => attendanceFilter };
 }
 
@@ -97,6 +103,36 @@ describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it('keeps card reads, actions, acknowledgement and weekly totals available with an invalid member year', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    f.members.push({ _id: '6a0000000000000000000099', username: 'bad.year', displayName: 'Bad', enrollYear: 2062 });
+    const view = await f.service.getMe(actor);
+    expect(view.requiredEnrollYears).toEqual([2025, 2024]);
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    const first = await f.service.action(actor, input);
+    expect((await f.service.action(actor, input)).result).toEqual(first.result);
+    expect(await f.service.acknowledgeInteractions(actor, ['a'.repeat(64)])).toEqual({ acknowledged: 0 });
+    expect((await f.service.getWeekPoints(actor, view.week)).balance).toBe(60);
+    expect((await f.service.getTeamWeekEntertainment(actor.teamId, view.week))[actor.userId]).toBe(0);
+  });
+  it('keeps ordinary cards available but blocks assessment-target cards when saved cohort evidence is malformed', async () => {
+    const log = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const other = { _id: '6a0000000000000000000012', username: 'receiver', displayName: 'Receiver', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    Object.assign(f.document().state.members[actor.userId].inventory, { 'r-skip': 1, 'r-add': 1 });
+    f.setCohortEvidence([{ latest: 2062, invalid: 1 }]);
+    expect((await f.service.getMe(actor)).requiredEnrollYears).toEqual([]);
+    await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-10', targetId: other._id })).rejects.toThrow('请选择当前应考成员');
+    expect(f.document().state.members[actor.userId].inventory['r-skip']).toBe(1);
+    await f.service.action(actor, { requestKey: randomUUID(), action: 'use', cardId: 'card-05', targetId: other._id });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ teamId: actor.teamId, source: 'persisted' }));
+  });
+  it.each([new Error('cohort database unavailable'), new ServiceUnavailableException('database service unavailable')])('propagates cohort database failures rather than treating them as invalid data: %s', async failure => {
+    f.setCohortError(failure);
+    await expect(f.service.getMe(actor)).rejects.toBe(failure);
+    await expect(f.service.getTeamWeekEntertainment(actor.teamId, getWeekKey(new Date()))).rejects.toBe(failure);
+  });
 
   it.each([['r-charity', 'card-09'], ['r-skip', 'card-10'], ['r-thief', 'card-11'], ['sr-famine', 'card-16'], ['sr-redking', 'card-18']])('notifies the affected members of %s and confirms without applying it again', async (cardId, publicCard) => {
     const receiver = { _id: '6a0000000000000000000012', username: 'test.receiver', displayName: 'Receiver', enrollYear: 2026 };
@@ -160,7 +196,7 @@ describe('CardsService atomic actions and private collection', () => {
     expect(view.collection.find(card => card.id === 'card-06')).toMatchObject({ targetMode: 'other', targetScope: 'same-grade' });
     expect(initial.week).toBe(view.week);
     f.setCohortEvidence([{ latest: 2062, invalid: 1 }]);
-    await expect(f.service.getMe(actor)).rejects.toThrow('Invalid persisted cohort evidence');
+    expect((await f.service.getMe(actor)).requiredEnrollYears).toEqual([]);
   });
 
   it.each([['n-reduce', 'card-02', true], ['r-steal', 'card-06', false], ['sr-invasion', 'card-17', false], ['ssr-arrows', 'card-21', false]] as const)(
