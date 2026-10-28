@@ -6,7 +6,7 @@ import { DrawAnimation } from './DrawAnimation';
 vi.mock('./CardArt', () => ({ CardArt: ({ name }: { name: string }) => <span>{name}图像</span> }));
 const response = (duplicate = false): CardGameActionResponse => ({
   result: { message: '本次获得双份SSR奖励', gainedCardIds: ['card-19', duplicate ? 'card-19' : 'card-20'], drawAnimation: 'radiance', ssrPity: true },
-  state: { week: '2026-10-26', entertainmentSeconds: 0, points: { earned: 0, bonus: 0, spent: 0, balance: 0 }, freeRemaining: 1, giftDraws: 0, pity: { sinceSR: 0, sinceSSR: 0, srRemaining: 10, ssrRemaining: 50 }, players: [], statuses: { acceleration: false, immuneUntil: null, lockedUntil: null, starvedUntil: null }, events: [], collection: [
+  state: { week: '2026-10-26', entertainmentSeconds: 0, points: { earned: 0, bonus: 0, spent: 0, balance: 0 }, freeRemaining: 1, giftDraws: 0, pity: { sinceSR: 0, sinceSSR: 0, srRemaining: 30, ssrRemaining: 70 }, players: [], statuses: { acceleration: false, immuneUntil: null, lockedUntil: null, starvedUntil: null }, events: [], collection: [
     { id: 'card-19', rarity: 'SSR', quantity: 1, unlocked: true, name: '五谷丰登' },
     { id: 'card-20', rarity: 'SSR', quantity: 1, unlocked: true, name: '无懈可击' }
   ] }
@@ -19,6 +19,46 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe('DrawAnimation saved-result playback', () => {
+  it('reveals ten cards one at a time in order and ends with the ten-draw summary', async () => {
+    const saved = response(); saved.result = { ...saved.result, drawCount: 10, radianceCount: 1,
+      gainedCardIds: ['card-19', ...Array(8).fill('card-01'), 'card-20'] };
+    saved.state.collection.push({ id: 'card-01', name: '加速', rarity: 'N', quantity: 8, unlocked: true });
+    const complete = vi.fn(); const rendered = render(<DrawAnimation response={saved} onComplete={complete} />);
+    fireEvent.ended(rendered.container.querySelector('video')!);
+    await screen.findByRole('heading', { name: '第 1 / 10 张' });
+    expect(screen.getByRole('heading', { name: '五谷丰登' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '无懈可击' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    for (let step = 2; step <= 10; step++) {
+      await userEvent.click(screen.getByRole('button', { name: '下一张' }));
+      expect(await screen.findByRole('heading', { name: `第 ${step} / 10 张` })).toBeInTheDocument();
+      expect(screen.getAllByRole('article')).toHaveLength(1);
+    }
+    expect(screen.getByRole('heading', { name: '无懈可击' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '查看十连结果' }));
+    expect(screen.getByRole('heading', { name: '十连结果' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '加速 ×8' })).toBeInTheDocument();
+    expect(screen.getByText(/10 次抽取 · 共获得 10 张卡牌/)).toBeInTheDocument();
+    expect(complete).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '完成，返回卡牌页面' }));
+    expect(complete).toHaveBeenCalledOnce();
+  });
+  it.each(['video', 'individual'])('can skip from %s directly to all ten saved rewards', async phase => {
+    const saved = response(); saved.result = { ...saved.result, drawCount: 10, radianceCount: 1,
+      gainedCardIds: [...Array(9).fill('card-19'), 'card-20'] };
+    const rendered = render(<DrawAnimation response={saved} onComplete={vi.fn()} />);
+    if (phase === 'individual') {
+      fireEvent.ended(rendered.container.querySelector('video')!);
+      await screen.findByRole('heading', { name: '第 1 / 10 张' });
+      await userEvent.click(screen.getByRole('button', { name: '下一张' }));
+    }
+    await userEvent.click(screen.getByRole('button', { name: '跳过展示，直接看十连结果' }));
+    expect(screen.getByRole('heading', { name: '十连结果' })).toBeInTheDocument();
+    expect(screen.getByText(/10 次抽取 · 共获得 10 张卡牌/)).toBeInTheDocument();
+    expect(screen.getByText(/十连至少获得两张 SSR，总数仍为 10 张/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '五谷丰登 ×9' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '下一张' })).not.toBeInTheDocument();
+  });
   it('plays the server-selected video without showing reward names, then reveals both SSR rewards on ended', async () => {
     const complete = vi.fn(); const rendered = render(<DrawAnimation response={response()} onComplete={complete} />);
     const video = rendered.container.querySelector('video')!;

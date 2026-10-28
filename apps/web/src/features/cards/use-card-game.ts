@@ -9,7 +9,8 @@ const definitive = (error: unknown) => axios.isAxiosError(error) && [400, 403, 4
 const isPending = (value: unknown): value is CardGameActionInput => {
   if (!value || typeof value !== 'object') return false;
   const item = value as CardGameActionInput;
-  return typeof item.requestKey === 'string' && /^[a-z\d-]{36}$/i.test(item.requestKey) && ['draw', 'use', 'gift'].includes(item.action);
+  return typeof item.requestKey === 'string' && /^[a-z\d-]{36}$/i.test(item.requestKey) && ['draw', 'use', 'gift'].includes(item.action) &&
+    (item.count === undefined || item.action === 'draw' && [1, 10].includes(item.count));
 };
 
 export const useCardGame = (identity: string) => {

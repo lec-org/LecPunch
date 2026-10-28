@@ -121,7 +121,9 @@ describe('StatsService', () => {
       {
         $group: {
           _id: '$userId',
-          totalDurationSeconds: { $sum: '$durationSeconds' },
+          totalDurationSeconds: { $sum: { $cond: [{ $and: [
+            { $eq: ['$status', 'completed'] }, { $gte: ['$durationSeconds', 0] }, { $lt: ['$durationSeconds', 18000] }
+          ] }, '$durationSeconds', 0] } },
           sessionsCount: { $sum: 1 }
         }
       }
@@ -154,7 +156,9 @@ describe('StatsService', () => {
       {
         $group: {
           _id: '$userId',
-          totalDurationSeconds: { $sum: '$durationSeconds' },
+          totalDurationSeconds: { $sum: { $cond: [{ $and: [
+            { $eq: ['$status', 'completed'] }, { $gte: ['$durationSeconds', 0] }, { $lt: ['$durationSeconds', 18000] }
+          ] }, '$durationSeconds', 0] } },
           sessionsCount: { $sum: 1 }
         }
       }

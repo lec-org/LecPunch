@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { CARD_CATALOG } from './card-catalog';
+import { CARD_DRAW_WEIGHTS, CARD_DRAW_WEIGHT_TOTAL, weeklyDrawPoints } from '@lecpunch/shared';
 import { advanceGameState, applyGameAction, createGameState, GameContext, GameState, getPlayerWeek } from './card-engine';
 
 const a = 'member-a', b = 'member-b', c = 'member-c', outsider = 'member-other-year';
 function fixture() {
   const context: GameContext = {
     week: '2026-10-26', now: Date.parse('2026-10-26T12:00:00Z'), random: () => 0,
-    earnedPoints: {[a]: 600, [b]: 600, [c]: 600},
+    baseSeconds: {[a]: 36000, [b]: 36000, [c]: 36000},
     players: [{id:a,username:'aaa',name:'A',enrollYear:2025},{id:b,username:'bbb',name:'B',enrollYear:2025},
       {id:c,username:'ccc',name:'C',enrollYear:2025},{id:outsider,username:'other',name:'D',enrollYear:2024}]
   };
@@ -20,6 +21,111 @@ function use(state: GameState, context: GameContext, cardId: string, targetId?: 
 }
 
 describe('card collection and economy', () => {
+  it('ignores legacy minted credits and derives payment from current net time', () => {
+    const { state, context } = fixture(); context.baseSeconds[a] = 0;
+    Object.assign(getPlayerWeek(state, a, context.week), { freeUsed: 2, mintedSeconds: 36000 });
+    expect(() => applyGameAction(state, a, { action: 'draw' }, context)).toThrow('积分不足');
+    use(state, context, 'r-add'); use(state, context, 'r-add');
+    applyGameAction(state, a, { action: 'draw' }, context);
+    expect(getPlayerWeek(state, a, context.week)).toMatchObject({ entertainmentSeconds: 3600, spentPoints: 60, mintedSeconds: 36000 });
+    expect(weeklyDrawPoints(0, 3600, 60).balance).toBe(0);
+  });
+  it('transfers and linked changes affect recipients quota as well as assessment time', () => {
+    const { state, context } = fixture();
+    const quota = (id: string) => { const week = getPlayerWeek(state, id, context.week); return weeklyDrawPoints(context.baseSeconds[id] ?? 0, week.entertainmentSeconds, week.spentPoints).earned; };
+    use(state, context, 'r-steal');
+    expect(quota(a)).toBe(630); expect(quota(b)).toBe(570);
+    use(state, context, 'sr-chain', a, c); use(state, context, 'r-add', a);
+    expect(quota(a)).toBe(660); expect(quota(c)).toBe(630);
+    use(state, context, 'sr-chain', b, c); use(state, context, 'sr-redking', b);
+    expect(quota(b)).toBe(540); expect(quota(c)).toBe(600);
+  });
+  it('allocates the 10000 base-probability tickets as N 9000, R 770, SR 200, SSR 30', () => {
+    expect(Object.values(CARD_DRAW_WEIGHTS).reduce((sum, n) => sum + n, 0)).toBe(CARD_DRAW_WEIGHT_TOTAL);
+    const counts = { N: 0, R: 0, SR: 0, SSR: 0 };
+    for (let ticket = 0; ticket < 10000; ticket++) {
+      const { state, context } = fixture(); let calls = 0;
+      context.random = () => calls++ === 0 ? (ticket + 0.5) / 10000 : 0;
+      const result = applyGameAction(state, a, { action: 'draw' }, context);
+      counts[CARD_CATALOG.find(card => card.id === result.gainedCardId)!.rarity]++;
+    }
+    expect(counts).toEqual({ N: 9000, R: 770, SR: 200, SSR: 30 });
+  });
+  it.each([
+    { roll: 0, rarity: 'N' }, { roll: 0.89999999, rarity: 'N' },
+    { roll: 0.9, rarity: 'R' }, { roll: 0.97699999, rarity: 'R' },
+    { roll: 0.977, rarity: 'SR' }, { roll: 0.99699999, rarity: 'SR' },
+    { roll: 0.997, rarity: 'SSR' }, { roll: 0.99999999, rarity: 'SSR' }
+  ])('selects $rarity at the exact probability boundary $roll', ({ roll, rarity }) => {
+    const { state, context } = fixture(); context.random = () => roll;
+    const result = applyGameAction(state, a, { action: 'draw' }, context);
+    expect(CARD_CATALOG.find(card => card.id === result.gainedCardId)!.rarity).toBe(rarity);
+  });
+  it.each([{ roll: 0.99699999, rarity: 'SR' }, { roll: 0.997, rarity: 'SSR' }])('keeps the natural SSR chance at SR pity: $roll -> $rarity', ({ roll, rarity }) => {
+    const { state, context } = fixture(); state.members[a].pitySR = 29; context.random = () => roll;
+    const result = applyGameAction(state, a, { action: 'draw' }, context);
+    expect(CARD_CATALOG.find(card => card.id === result.gainedCardId)!.rarity).toBe(rarity);
+    expect(state.members[a].pitySR).toBe(0);
+  });
+  it('does not trigger either pity one draw early and prioritizes SSR when both limits are reached', () => {
+    const { state, context } = fixture(); state.members[a].pitySR = 28; state.members[a].pitySSR = 68;
+    expect(applyGameAction(state, a, { action: 'draw' }, context).gainedCardId).toBe('n-acceleration');
+    expect(state.members[a]).toMatchObject({ pitySR: 29, pitySSR: 69 });
+    expect(applyGameAction(state, a, { action: 'draw' }, context).gainedCardId).toBe('ssr-harvest');
+    expect(state.members[a]).toMatchObject({ pitySR: 0, pitySSR: 0 });
+  });
+  it('ten draws are equivalent to ten sequential single draws including both pity counters', () => {
+    const batch = fixture(), single = fixture();
+    batch.state.members[a].pitySSR = single.state.members[a].pitySSR = 20;
+    batch.state.members[a].pitySR = single.state.members[a].pitySR = 27;
+    const result = applyGameAction(batch.state, a, { action: 'draw', count: 10 }, batch.context);
+    const singles = Array.from({ length: 10 }, () => applyGameAction(single.state, a, { action: 'draw' }, single.context));
+    expect(batch.state).toEqual(single.state);
+    expect(result.gainedCardIds).toEqual(singles.flatMap(item => item.gainedCardIds!));
+    expect(result).toMatchObject({ drawCount: 10, radianceCount: 0, drawAnimation: 'purple', ssrPity: false });
+    expect(result.gainedCardIds).toHaveLength(10);
+    expect(getPlayerWeek(batch.state, a, batch.context.week).spentPoints).toBe(480);
+  });
+
+  it.each([{ gifts: 3, cost: 300 }, { gifts: 8, cost: 0 }, { gifts: 15, cost: 0 }])('ten draws use two free draws, then gifts, then exactly $cost points', ({ gifts, cost }) => {
+    const { state, context } = fixture();
+    getPlayerWeek(state, a, context.week).bonusDraws = gifts;
+    context.baseSeconds[a] = cost * 60;
+    const result = applyGameAction(state, a, { action: 'draw', count: 10 }, context);
+    expect(getPlayerWeek(state, a, context.week)).toMatchObject({ freeUsed: 2, bonusDraws: Math.max(0, gifts - 8), spentPoints: cost });
+    expect(result.gainedCardIds).toHaveLength(10);
+    expect(result.drawAnimation).toBe('blue');
+    expect(state.members[a].pitySR).toBe(10); expect(state.members[a].pitySSR).toBe(10);
+  });
+
+  it('an unaffordable ten-draw request leaves free draws, gifts, points, pity and discovery unchanged', () => {
+    const { state, context } = fixture(); getPlayerWeek(state, a, context.week).bonusDraws = 3;
+    context.baseSeconds[a] = 299 * 60; const before = structuredClone(state);
+    expect(() => applyGameAction(state, a, { action: 'draw', count: 10 }, context)).toThrow('需要 300 积分');
+    expect(state).toEqual(before);
+  });
+
+  it('a failure midway through the batch commits no partial rewards or payment', () => {
+    const { state, context } = fixture(); const before = structuredClone(state); let calls = 0;
+    context.random = () => { if (++calls === 9) throw new Error('random source unavailable'); return 0; };
+    expect(() => applyGameAction(state, a, { action: 'draw', count: 10 }, context)).toThrow('random source unavailable');
+    expect(state).toEqual(before);
+  });
+
+  it.each([0, 2, 9, 11, -1, 1.5, '10', null])('rejects an invalid draw count %s without mutation', count => {
+    const { state, context } = fixture(); const before = structuredClone(state);
+    expect(() => applyGameAction(state, a, { action: 'draw', count } as any, context)).toThrow('仅抽卡支持');
+    expect(state).toEqual(before);
+  });
+
+  it('starvation blocks a batch and count cannot be used with card actions', () => {
+    const { state, context } = fixture(); getPlayerWeek(state, a, context.week).starvedUntil = context.now + 1000;
+    const before = structuredClone(state);
+    expect(() => applyGameAction(state, a, { action: 'draw', count: 10 }, context)).toThrow('兵粮寸断');
+    expect(() => applyGameAction(state, a, { action: 'use', cardId: 'r-add', count: 10 }, context)).toThrow('仅抽卡支持');
+    expect(state).toEqual(before);
+  });
+
   it('reconciles an earned pre-midnight acceleration in the old week exactly once', () => {
     const {state,context}=fixture();
     context.now=Date.parse('2026-11-01T15:40:00Z');
@@ -28,7 +134,7 @@ describe('card collection and economy', () => {
     context.sessions=[{id:'old-week-checkout',userId:a,weekKey:'2026-10-26',
       checkOutAt:Date.parse('2026-11-01T15:50:00Z'),durationSeconds:600}];
     advanceGameState(state,context);
-    expect(getPlayerWeek(state,a,'2026-10-26')).toMatchObject({entertainmentSeconds:90,mintedSeconds:90});
+    expect(getPlayerWeek(state,a,'2026-10-26')).toMatchObject({entertainmentSeconds:90,mintedSeconds:0});
     expect(getPlayerWeek(state,a,context.week)).toMatchObject({entertainmentSeconds:0,mintedSeconds:0});
     advanceGameState(state,context);
     expect(getPlayerWeek(state,a,'2026-10-26').entertainmentSeconds).toBe(90);
@@ -59,64 +165,66 @@ describe('card collection and economy', () => {
     expect(state.members[a].inventory['n-acceleration']).toBe(4);expect(state.members[a].discovered).toEqual(['n-acceleration']);
   });
   it('insufficient points and starvation reject without spending or revealing a card', () => {
-    const {state,context}=fixture();const week=getPlayerWeek(state,a,context.week);week.freeUsed=2;context.earnedPoints[a]=0;
+    const {state,context}=fixture();const week=getPlayerWeek(state,a,context.week);week.freeUsed=2;context.baseSeconds[a]=0;
     const before=structuredClone(state);expect(()=>applyGameAction(state,a,{action:'draw'},context)).toThrow('积分不足');expect(state).toEqual(before);
     week.starvedUntil=context.now+1000;week.freeUsed=0;
     expect(()=>applyGameAction(state,a,{action:'draw'},context)).toThrow('兵粮寸断');expect(week.freeUsed).toBe(0);
   });
-  it('10th SR pity, 50th SSR pity and natural SSR reset counters across weeks', () => {
-    const {state,context}=fixture();state.members[a].pitySR=9;
+  it('30th SR pity, 70th SSR pity and natural SSR reset counters across weeks', () => {
+    const {state,context}=fixture();state.members[a].pitySR=29;
     expect(applyGameAction(state,a,{action:'draw'},context).gainedCardId).toBe('sr-angel');
     expect(state.members[a].pitySR).toBe(0);
-    state.members[a].pitySSR=49;state.members[a].pitySR=9;
+    state.members[a].pitySSR=69;state.members[a].pitySR=29;
     expect(applyGameAction(state,a,{action:'draw'},context).gainedCardId).toBe('ssr-harvest');
     expect(state.members[a].pitySSR).toBe(0);expect(state.members[a].pitySR).toBe(0);
     state.members[a].pitySSR=20;context.random=()=>0.999;
     applyGameAction(state,a,{action:'draw'},context);expect(state.members[a].pitySSR).toBe(0);
   });
-  it.each([
-    {roll:0.299999999,animation:'radiance',quantity:2},
-    {roll:0.3,animation:'gold',quantity:1}
-  ])('hard-pity radiance threshold is strictly below 30% ($roll)', ({roll,animation,quantity}) => {
-    const {state,context}=fixture();state.members[a].pitySSR=49;state.members[a].pitySR=9;
-    let calls=0;context.random=()=>calls++===0 ? roll : 0;
-    const result=applyGameAction(state,a,{action:'draw'},context);
-    expect(result.drawAnimation).toBe(animation);expect(result.ssrPity).toBe(true);
-    expect(result.gainedCardIds).toEqual(Array(quantity).fill('ssr-harvest'));
-    expect(result.gainedCardId).toBe('ssr-harvest');expect(state.members[a].inventory['ssr-harvest']).toBe(quantity);
-    expect(state.members[a].discovered).toEqual(['ssr-harvest']);expect(state.members[a].pitySSR).toBe(0);expect(state.members[a].pitySR).toBe(0);
-    expect(calls).toBe(quantity+1);
+  it.each([0, 0.1, 0.299999999, 0.3, 0.999])('single hard pity never triggers radiance (roll %s)', roll => {
+    const { state, context } = fixture(); state.members[a].pitySSR = 69;
+    let calls = 0; context.random = () => { calls++; return roll; };
+    const result = applyGameAction(state, a, { action: 'draw' }, context);
+    expect(result).toMatchObject({ drawAnimation: 'gold', ssrPity: true });
+    expect(result.gainedCardIds).toHaveLength(1); expect(calls).toBe(1);
+    expect(state.members[a].pitySSR).toBe(0); expect(state.members[a].pitySR).toBe(0);
   });
-  it('radiance independently samples two different SSRs without rarity or ordinary draw rolls', () => {
-    const {state,context}=fixture();state.members[a].pitySSR=49;
-    const rolls=[0.1,0,0.999999];context.random=()=>{const value=rolls.shift();if(value===undefined)throw Error('unexpected random draw');return value;};
-    const result=applyGameAction(state,a,{action:'draw'},context);
-    expect(result.gainedCardIds).toEqual(['ssr-harvest','ssr-arrows']);
-    expect(state.members[a].discovered).toEqual(['ssr-harvest','ssr-arrows']);expect(rolls).toEqual([]);
+  it.each([{ roll: 0.299999999, animation: 'radiance', ssrs: 2 }, { roll: 0.3, animation: 'gold', ssrs: 1 }])('ten-draw hard pity has a strict 30% radiance threshold ($roll)', ({ roll, animation, ssrs }) => {
+    const { state, context } = fixture(); state.members[a].pitySSR = 69;
+    let calls = 0; context.random = () => calls++ === 0 ? roll : 0;
+    const result = applyGameAction(state, a, { action: 'draw', count: 10 }, context);
+    expect(result.drawAnimation).toBe(animation); expect(result.gainedCardIds).toHaveLength(10);
+    expect(result.gainedCardIds!.filter(id => CARD_CATALOG.find(card => card.id === id)!.rarity === 'SSR')).toHaveLength(ssrs);
+    expect(Object.values(state.members[a].inventory).reduce((sum, n) => sum + n, 0)).toBe(10);
+    expect(getPlayerWeek(state, a, context.week).spentPoints).toBe(480);
+    expect(state.members[a].pitySSR).toBe(ssrs === 2 ? 8 : 9);
   });
-  it.each(['free','gift','paid'] as const)('radiance consumes only one %s draw opportunity/payment', funding => {
-    const {state,context}=fixture();state.members[a].pitySSR=49;
-    const week=getPlayerWeek(state,a,context.week);
-    if(funding!=='free')week.freeUsed=2;
-    if(funding==='gift')week.bonusDraws=2;
-    const result=applyGameAction(state,a,{action:'draw'},context);
-    const saved=getPlayerWeek(state,a,context.week);
-    expect(result.gainedCardIds).toHaveLength(2);
-    expect(saved.freeUsed).toBe(funding==='free'?1:2);
-    expect(saved.bonusDraws).toBe(funding==='gift'?1:0);
-    expect(saved.spentPoints).toBe(funding==='paid'?60:0);
+  it('radiance with hard pity in the tenth slot replaces a non-SSR and preserves all ten final rewards', () => {
+    const { state, context } = fixture(); state.members[a].pitySSR = 60;
+    const result = applyGameAction(state, a, { action: 'draw', count: 10 }, context);
+    expect(result.drawAnimation).toBe('radiance'); expect(result.gainedCardIds).toHaveLength(10);
+    expect(result.gainedCardIds![9]).toBe('ssr-harvest'); expect(result.gainedCardIds![0]).toBe('ssr-harvest');
+    expect(state.members[a].pitySR).toBe(0); expect(state.members[a].pitySSR).toBe(0);
+    expect(state.members[a].discovered).toEqual(['ssr-harvest', 'n-acceleration']);
   });
-  it('pity 48 does not enter radiance and an early natural SSR stays a single gold', () => {
-    const {state,context}=fixture();state.members[a].pitySSR=48;
-    context.random=()=>0.99;
+  it('keeps all naturally obtained SSR cards when a radiance batch has no non-SSR to upgrade', () => {
+    const { state, context } = fixture(); state.members[a].pitySSR = 69; let calls = 0;
+    context.random = () => calls++ < 2 ? 0 : 0.999;
+    const result = applyGameAction(state, a, { action: 'draw', count: 10 }, context);
+    expect(result.drawAnimation).toBe('radiance');
+    expect(result.gainedCardIds).toEqual(['ssr-harvest', ...Array(9).fill('ssr-arrows')]);
+    expect(calls).toBe(20); expect(state.members[a].pitySR).toBe(0); expect(state.members[a].pitySSR).toBe(0);
+  });
+  it('pity 68 does not enter radiance and an early natural SSR stays a single gold', () => {
+    const {state,context}=fixture();state.members[a].pitySSR=68;
+    context.random=()=>0.999;
     const result=applyGameAction(state,a,{action:'draw'},context);
     expect(result.drawAnimation).toBe('gold');expect(result.ssrPity).toBe(false);expect(result.gainedCardIds).toHaveLength(1);
     expect(state.members[a].pitySSR).toBe(0);
-    state.members[a].pitySSR=48;context.random=()=>0;
+    state.members[a].pitySSR=68;context.random=()=>0;
     const lower=applyGameAction(state,a,{action:'draw'},context);
-    expect(lower.drawAnimation).toBe('blue');expect(lower.ssrPity).toBe(false);expect(lower.gainedCardIds).toHaveLength(1);expect(state.members[a].pitySSR).toBe(49);
+    expect(lower.drawAnimation).toBe('blue');expect(lower.ssrPity).toBe(false);expect(lower.gainedCardIds).toHaveLength(1);expect(state.members[a].pitySSR).toBe(69);
   });
-  it.each([{roll:0.1,animation:'blue'},{roll:0.7,animation:'blue'},{roll:0.9,animation:'purple'},{roll:0.99,animation:'gold'}])('ordinary draw color follows rarity ($roll)', ({roll,animation}) => {
+  it.each([{roll:0.1,animation:'blue'},{roll:0.95,animation:'blue'},{roll:0.98,animation:'purple'},{roll:0.999,animation:'gold'}])('ordinary draw color follows rarity ($roll)', ({roll,animation}) => {
     const {state,context}=fixture();context.random=()=>roll;
     const result=applyGameAction(state,a,{action:'draw'},context);
     expect(result.drawAnimation).toBe(animation);expect(result.ssrPity).toBe(false);expect(result.gainedCardIds).toEqual([result.gainedCardId]);
@@ -144,29 +252,29 @@ describe('card collection and economy', () => {
     expect(getPlayerWeek(state,a,'2026-10-26').entertainmentSeconds).toBe(-3600);
   });
   it('mystery neither draws itself nor changes ordinary pity', () => {
-    const {state,context}=fixture();state.members[a].pitySSR=49;state.members[a].pitySR=9;context.random=()=>0.7;
+    const {state,context}=fixture();state.members[a].pitySSR=69;state.members[a].pitySR=29;context.random=()=>0.7;
     const result=use(state,context,'r-mystery');expect(result.gainedCardId).not.toBe('r-mystery');
-    expect(state.members[a].pitySR).toBe(9);expect(state.members[a].pitySSR).toBe(49);expect(getPlayerWeek(state,a,context.week).freeUsed).toBe(0);
+    expect(state.members[a].pitySR).toBe(29);expect(state.members[a].pitySSR).toBe(69);expect(getPlayerWeek(state,a,context.week).freeUsed).toBe(0);
     expect(result.gainedCardIds).toBeUndefined();expect(result.drawAnimation).toBeUndefined();expect(result.ssrPity).toBeUndefined();
   });
   it('mystery produces one SSR without radiance at hard pity', () => {
-    const {state,context}=fixture();state.members[a].pitySSR=49;context.random=()=>0.99;
+    const {state,context}=fixture();state.members[a].pitySSR=69;context.random=()=>0.999;
     const result=use(state,context,'r-mystery');
     expect(result.gainedCardId).toBe('ssr-arrows');expect(state.members[a].inventory['ssr-arrows']).toBe(1);
-    expect(result.drawAnimation).toBeUndefined();expect(result.gainedCardIds).toBeUndefined();expect(state.members[a].pitySSR).toBe(49);
+    expect(result.drawAnimation).toBeUndefined();expect(result.gainedCardIds).toBeUndefined();expect(state.members[a].pitySSR).toBe(69);
   });
 });
 
 describe('card application and defenses', () => {
-  it('reduction and steal may make entertainment negative, without minting transferred points', () => {
+  it('reduction and steal may make net time negative without a separate minted balance', () => {
     const {state,context}=fixture();use(state,context,'n-reduce');use(state,context,'r-steal');
     expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-3600);
     expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);
     expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(0);
   });
-  it('positive new additions mint points, and can be applied to others', () => {
+  it('positive additions change net time without a second minted credit', () => {
     const {state,context}=fixture();use(state,context,'r-add',b);
-    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);expect(getPlayerWeek(state,b,context.week).mintedSeconds).toBe(1800);
+    expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(1800);expect(getPlayerWeek(state,b,context.week).mintedSeconds).toBe(0);
     expect(state.members[b].discovered).toEqual([]);
   });
   it('N shield protects N, blade protects N/R, and weaker available defense is spent first', () => {
@@ -204,7 +312,7 @@ describe('card application and defenses', () => {
   });
   it('angel affects same-year players, harvest has no weekly beneficiary limit', () => {
     const {state,context}=fixture();use(state,context,'sr-angel');use(state,context,'ssr-harvest');use(state,context,'ssr-harvest');
-    expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(1800);expect(getPlayerWeek(state,b,context.week).bonusDraws).toBe(4);
+    expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(0);expect(getPlayerWeek(state,b,context.week).bonusDraws).toBe(4);
     expect(getPlayerWeek(state,outsider,context.week).entertainmentSeconds).toBe(0);expect(getPlayerWeek(state,outsider,context.week).bonusDraws).toBe(0);
   });
   it('charity and thief conserve entertainment and do not mint transfer points', () => {
@@ -244,7 +352,7 @@ describe('card application and defenses', () => {
     context.sessions.push({id:'valid',userId:a,weekKey:context.week,checkOutAt:context.now+2,durationSeconds:14400});
     context.now+=3;
     advanceGameState(state,context);advanceGameState(state,context);
-    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(1800);
+    expect(getPlayerWeek(state,a,context.week).entertainmentSeconds).toBe(1800);expect(getPlayerWeek(state,a,context.week).mintedSeconds).toBe(0);
     expect(getPlayerWeek(state,a,context.week).accelerationAt).toBeUndefined();
   });
 });

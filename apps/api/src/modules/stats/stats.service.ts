@@ -1,9 +1,15 @@
 import { Injectable, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
 import { AttendanceService } from '../attendance/attendance.service';
 import { UsersService } from '../users/users.service';
-import { ERROR_CODES, weeklyGoalSeconds } from '@lecpunch/shared';
+import { ERROR_CODES, weeklyGoalSeconds, comprehensiveDurationSeconds } from '@lecpunch/shared';
 import { getWeekKey } from '../../common/utils/time.util';
 import { CardsService } from '../cards/cards.service';
+
+// Invalidated sessions remain visible in counts but never contribute to the
+// comprehensive duration, even if a legacy row retains a nonzero duration.
+const validDurationSum = { $sum: { $cond: [{ $and: [
+  { $eq: ['$status', 'completed'] }, { $gte: ['$durationSeconds', 0] }, { $lt: ['$durationSeconds', 18000] }
+] }, '$durationSeconds', 0] } };
 
 @Injectable()
 export class StatsService {
@@ -17,11 +23,11 @@ export class StatsService {
     const model = this.attendanceService.getModel();
     const rows = await model
       .aggregate([
-        { $match: { userId, status: { $ne: 'active' } } },
+        { $match: { teamId, userId, status: { $ne: 'active' } } },
         {
           $group: {
             _id: '$weekKey',
-            totalDurationSeconds: { $sum: '$durationSeconds' },
+            totalDurationSeconds: validDurationSum,
             sessionsCount: { $sum: 1 },
             weeklyGoalSecondsSnapshot: { $max: '$weeklyGoalSecondsSnapshot' }
           }
@@ -60,7 +66,7 @@ export class StatsService {
       const adjustmentSummary = adjustmentSummaries.get(`${userId}:${row._id}`);
       const manualAdjustmentSeconds = adjustmentSummary?.manualAdjustmentSeconds ?? 0;
       const entertainmentSeconds = entertainmentHistory[row._id] ?? 0;
-      const totalDurationSeconds = Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds) + entertainmentSeconds;
+      const totalDurationSeconds = comprehensiveDurationSeconds(recordedDurationSeconds, manualAdjustmentSeconds, entertainmentSeconds);
       const goal = row.weeklyGoalSecondsSnapshot ?? weeklyGoalSeconds(enrollYear);
       return {
         weekKey: row._id,
@@ -102,7 +108,7 @@ export class StatsService {
         {
           $group: {
             _id: '$userId',
-            totalDurationSeconds: { $sum: '$durationSeconds' },
+            totalDurationSeconds: validDurationSum,
             sessionsCount: { $sum: 1 }
           }
         }
@@ -123,7 +129,7 @@ export class StatsService {
         const manualAdjustmentSeconds = adjustmentSummary?.manualAdjustmentSeconds ?? 0;
         const entertainmentSeconds = entertainment[member.id] ?? 0;
         const goal = weeklyGoalSeconds(member.enrollYear);
-        const totalDurationSeconds = Math.max(0, recordedDurationSeconds + manualAdjustmentSeconds) + entertainmentSeconds;
+        const totalDurationSeconds = comprehensiveDurationSeconds(recordedDurationSeconds, manualAdjustmentSeconds, entertainmentSeconds);
         return {
           memberKey: this.usersService.getMemberKey(member.id),
           totalDurationSeconds,

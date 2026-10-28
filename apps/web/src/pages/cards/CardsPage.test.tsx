@@ -11,7 +11,7 @@ vi.mock('@/features/cards/cards.api', () => api);
 const originalObjectUrlDescriptors = Object.fromEntries(['createObjectURL', 'revokeObjectURL'].map(key => [key, Object.getOwnPropertyDescriptor(URL, key)]));
 const makeView = (): CardGameView => ({
   week: '2026-10-26', entertainmentSeconds: 0, points: { earned: 120, bonus: 0, spent: 0, balance: 120 }, freeRemaining: 2, giftDraws: 0,
-  pity: { sinceSR: 0, sinceSSR: 0, srRemaining: 10, ssrRemaining: 50 },
+  pity: { sinceSR: 0, sinceSSR: 0, srRemaining: 30, ssrRemaining: 70 },
   collection: Array.from({ length: 21 }, (_, i) => ({ id: `card-${String(i + 1).padStart(2, '0')}`, rarity: i < 4 ? 'N' : i < 11 ? 'R' : i < 18 ? 'SR' : 'SSR', unlocked: false, quantity: 0 })),
   players: [{ id: 'member-1', username: 'member', displayName: 'Member', enrollYear: 2024 }, { id: 'member-2', username: 'other', displayName: '其他成员', enrollYear: 2024 }],
   statuses: { acceleration: false, immuneUntil: null, lockedUntil: null, starvedUntil: null }, events: []
@@ -40,17 +40,56 @@ afterEach(() => {
   }
 });
 describe('CardsPage authenticated collection', () => {
+  it('shows the full ten-draw cost and disables a batch when the balance cannot cover it', async () => {
+    render(<CardsPage />);
+    expect(await screen.findByRole('button', { name: '十连抽 · 480 积分' })).toBeDisabled();
+    expect(screen.getByText('本次十连：免费 2 次 ＋ 赠送 0 次 ＋ 480 积分；不足十抽不扣费。')).toBeInTheDocument();
+    expect(api.performCardAction).not.toHaveBeenCalled();
+  });
+
+  it('includes free and gift draws in a batch and preserves count on a timed-out retry', async () => {
+    const view = makeView(); view.giftDraws = 6;
+    api.getCardGame.mockResolvedValue(view);
+    const saved = acquired(); saved.result = { message: '十连抽成功', drawCount: 10, drawAnimation: 'purple', gainedCardIds: Array(10).fill('card-01') };
+    api.performCardAction.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce(saved);
+    render(<CardsPage />);
+    await userEvent.click(await screen.findByRole('button', { name: '十连抽 · 120 积分' }));
+    await screen.findByRole('region', { name: '待确认操作' });
+    const original = api.performCardAction.mock.calls[0][0];
+    expect(original).toMatchObject({ action: 'draw', count: 10 });
+    expect(screen.getByRole('button', { name: /十连抽/ })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: '使用原请求重试' }));
+    await screen.findByRole('dialog');
+    expect(api.performCardAction.mock.calls[1][0]).toEqual(original);
+    await userEvent.click(screen.getByRole('button', { name: '跳过展示，直接看十连结果' }));
+    expect(screen.getByText(/10 次抽取 · 共获得 10 张卡牌/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '加速 ×10' })).toBeInTheDocument();
+  });
+
+  it('restores and verifies a pending ten-draw request without issuing another draw', async () => {
+    const pending = { action: 'draw', count: 10, requestKey: '00000000-0000-4000-8000-000000000002' };
+    sessionStorage.setItem('lecpunch-card-pending:team-1:member-1', JSON.stringify(pending));
+    const saved = acquired(); saved.result = { message: '十连抽成功', drawCount: 10, drawAnimation: 'purple', gainedCardIds: Array(10).fill('card-01') };
+    api.getCardAction.mockResolvedValue(saved); render(<CardsPage />);
+    await userEvent.click(await screen.findByRole('button', { name: '核实操作结果' }));
+    await screen.findByRole('dialog');
+    expect(api.getCardAction).toHaveBeenCalledWith(pending.requestKey);
+    expect(api.performCardAction).not.toHaveBeenCalled();
+  });
+
   it('shows current pity as n / m and keeps probabilities inside the rules dialog', async () => {
-    const state = makeView(); state.pity = { sinceSR: 4, sinceSSR: 14, srRemaining: 6, ssrRemaining: 36 };
+    const state = makeView(); state.pity = { sinceSR: 4, sinceSSR: 14, srRemaining: 26, ssrRemaining: 56 };
     api.getCardGame.mockResolvedValue(state); render(<CardsPage />);
-    expect(await screen.findByLabelText('SR 或以上保底进度')).toHaveTextContent('4 / 10');
-    expect(screen.getByLabelText('SSR 保底进度')).toHaveTextContent('14 / 50');
-    expect(screen.queryByText('60%')).not.toBeInTheDocument();
+    expect(await screen.findByLabelText('SR 或以上保底进度')).toHaveTextContent('4 / 30');
+    expect(screen.getByLabelText('SSR 保底进度')).toHaveTextContent('14 / 70');
+    expect(screen.queryByText('90%')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '综合时长排行与考核记录' })).not.toBeInTheDocument();
     const opener = screen.getByRole('button', { name: '查看抽卡规则' }); await userEvent.click(opener);
     const dialog = screen.getByRole('dialog', { name: '抽卡规则与概率' });
-    expect(within(dialog).getByText('60%')).toBeInTheDocument();
+    expect(within(dialog).getByText('90%')).toBeInTheDocument();
     expect(within(dialog).getByText('2%')).toBeInTheDocument();
+    expect(within(dialog).getByText('7.7%')).toBeInTheDocument();
+    expect(within(dialog).getByText('0.3%')).toBeInTheDocument();
     expect(within(dialog).getByText(/30% 概率触发捕获明光/)).toBeInTheDocument();
     fireEvent(dialog, new Event('cancel', { bubbles: true, cancelable: true }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(opener).toHaveFocus();
@@ -80,6 +119,15 @@ describe('CardsPage authenticated collection', () => {
     expect(api.getCardArt).not.toHaveBeenCalled();
     expect(screen.queryByText('加速')).not.toBeInTheDocument();
     expect(screen.getByText('−00:30:00')).toBeInTheDocument();
+  });
+  it('shows comprehensive time and quota rather than a separate positive card-income balance', async () => {
+    api.getCardGame.mockResolvedValue({ ...makeView(), entertainmentSeconds: -1800,
+      points: { rule: 'comprehensive-v1', comprehensiveSeconds: 5400, earned: 90, bonus: 0, spent: 60, balance: 30 } });
+    render(<CardsPage />);
+    expect(await screen.findByText('综合时长额度 90 − 已使用 60')).toBeInTheDocument();
+    expect(screen.getByText('01:30:00')).toBeInTheDocument();
+    expect(screen.getByText('本周综合时长')).toBeInTheDocument();
+    expect(screen.queryByText(/卡牌新增收益/)).not.toBeInTheDocument();
   });
   it('reveals only the card actually returned by a committed draw', async () => {
     api.performCardAction.mockResolvedValue(acquired()); render(<CardsPage />);

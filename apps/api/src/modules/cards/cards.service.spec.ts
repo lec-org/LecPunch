@@ -58,7 +58,7 @@ function fixture() {
   };
   const members = [{ _id: actor.userId, username: actor.username, displayName: actor.displayName, enrollYear: 2025 }];
   const users = { find: () => query(() => members) };
-  const points = { getTeamWeekEarnedPoints: vi.fn(async () => ({ [actor.userId]: 60 })) };
+  const points = { getTeamWeekBaseSeconds: vi.fn(async () => ({ [actor.userId]: 3600 })) };
   let attendanceRows: any[] = [];
   let attendanceFilter: any;
   const attendance = { find: (filter: any) => { attendanceFilter = filter; return query(() => attendanceRows.filter(row => filter.weekKey.$in.includes(row.weekKey))); } };
@@ -75,20 +75,62 @@ describe('CardsService atomic actions and private collection', () => {
   beforeEach(() => { f = fixture(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  it('exposes one comprehensive quota, ignores old minted credits and retains spent debt', async () => {
+    const initial = await f.service.getMe(actor);
+    Object.assign(f.document().state.members[actor.userId].weeks[initial.week], { entertainmentSeconds: -2700, mintedSeconds: 7200, spentPoints: 30 });
+    const view = await f.service.getMe(actor);
+    expect(view.points).toMatchObject({ rule: 'comprehensive-v1', comprehensiveSeconds: 900, earned: 15, bonus: 0, spent: 30, balance: 0 });
+    expect(await f.service.getWeekPoints(actor, view.week)).toEqual(view.points);
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 5400 });
+    expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 45, spent: 30, balance: 15 });
+  });
+
+  it('reads historical consumption and signed time from immutable week archives', async () => {
+    await f.service.getMe(actor);
+    f.weeks.rows.set('history', { teamId: actor.teamId, userId: actor.userId, weekKey: '2026-01-05',
+      week: { entertainmentSeconds: -900, mintedSeconds: 99999, spentPoints: 60, freeUsed: 2, bonusDraws: 0 } });
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 7200 });
+    expect(await f.service.getWeekPoints(actor, '2026-01-05')).toMatchObject({ earned: 105, spent: 60, balance: 45, comprehensiveSeconds: 6300 });
+    expect(f.points.getTeamWeekBaseSeconds).toHaveBeenCalledWith(actor.teamId, '2026-01-05');
+  });
+
+  it('reports the 30/70 limits while preserving already accumulated pity progress', async () => {
+    await f.service.getMe(actor);
+    Object.assign(f.document().state.members[actor.userId], { pitySR: 9, pitySSR: 49 });
+    expect((await f.service.getMe(actor)).pity).toEqual({ sinceSR: 9, sinceSSR: 49, srRemaining: 21, ssrRemaining: 21 });
+  });
+
+  it('stores one ten-draw receipt and replays the entire batch without extra payment or rewards', async () => {
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 36000 });
+    const input = { requestKey: randomUUID(), action: 'draw' as const, count: 10 as const };
+    const first = await f.service.action(actor, input);
+    const replay = await f.service.action(actor, input);
+    const status = await f.service.actionStatus(actor, input.requestKey);
+    expect(first.result.drawCount).toBe(10);
+    expect(first.result.gainedCardIds!.length).toBeGreaterThanOrEqual(10);
+    expect(first.result.gainedCardIds!.every(id => /^card-\d{2}$/.test(id))).toBe(true);
+    expect(replay.result).toEqual(first.result); expect(status.result).toEqual(first.result);
+    expect(replay.state.points.spent).toBe(480); expect(f.receipts.rows.size).toBe(1);
+    expect(replay.state.collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(first.result.gainedCardIds!.length);
+    await expect(f.service.action(actor, { ...input, count: 1 })).rejects.toThrow('同一操作编号');
+    expect(cardActionHash({ action: 'draw' })).toBe(cardActionHash({ action: 'draw', count: 1 }));
+    expect(cardActionHash({ action: 'draw', count: 10 })).not.toBe(cardActionHash({ action: 'draw' }));
+  });
+
   it('uses adjusted earnings for paid draws and retains spent points after a deduction', async () => {
-    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 120 });
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 7200 });
     const first = await f.service.getMe(actor);
     f.document().state.members[actor.userId].weeks[first.week].freeUsed = 2;
     const input = { requestKey: randomUUID(), action: 'draw' as const };
     const drawn = await f.service.action(actor, input);
     expect(drawn.state.points).toMatchObject({ earned: 120, spent: 60, balance: 60 });
     expect((await f.service.action(actor, input)).state.points.spent).toBe(60);
-    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 30 });
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 1800 });
     expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 30, spent: 60, balance: 0 });
     await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('积分不足');
-    f.points.getTeamWeekEarnedPoints.mockResolvedValue({ [actor.userId]: 120 });
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 7200 });
     expect((await f.service.getMe(actor)).points.balance).toBe(60);
-    expect(f.points.getTeamWeekEarnedPoints).toHaveBeenCalledWith(actor.teamId, first.week);
+    expect(f.points.getTeamWeekBaseSeconds).toHaveBeenCalledWith(actor.teamId, first.week);
   });
 
   it.each(['2026-10-25T16:01:00Z', '2026-10-25T22:01:00Z'])('reconciles previous-week acceleration before reading or archiving at %s', async now => {
@@ -152,36 +194,25 @@ describe('CardsService atomic actions and private collection', () => {
     await expect(f.service.action(actor, { ...input, action: 'use', cardId: 'card-01' })).rejects.toThrow('同一操作编号不能用于不同请求');
   });
 
-  it('persists opaque dual SSR outcomes and animation across retries and status queries', async () => {
-    await f.service.getMe(actor);
-    f.document().state.members[actor.userId].pitySSR = 49;
-    let input = { requestKey: randomUUID(), action: 'draw' as const };
-    // Pick an operation key with the intended server-seeded branch; no production RNG is replaced.
-    for (let i = 0; i < 200; i++) {
+  it('persists a ten-card radiance result, including its replacement, across retries and status queries', async () => {
+    f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 36000 });
+    await f.service.getMe(actor); f.document().state.members[actor.userId].pitySSR = 69;
+    let input = { requestKey: randomUUID(), action: 'draw' as const, count: 10 as const };
+    for (let attempt = 0; attempt < 1000; attempt++) {
       const receiptKey = createHash('sha256').update(`${actor.userId}:${input.requestKey}`).digest('hex');
-      const seed = `${actor.teamId}:${receiptKey}:${cardActionHash(input)}`;
-      const random = seededCardRandom('local-test-signing-key-of-sufficient-length', seed);
-      if (random() < 0.3 && Math.floor(random() * 3) === Math.floor(random() * 3)) break;
+      const random = seededCardRandom('local-test-signing-key-of-sufficient-length', `${actor.teamId}:${receiptKey}:${cardActionHash(input)}`);
+      if (random() < 0.3) break;
       input = { ...input, requestKey: randomUUID() };
     }
     const first = await f.service.action(actor, input);
-    expect(first.result.drawAnimation).toBe('radiance');
-    expect(first.result.ssrPity).toBe(true);
-    expect(first.result.gainedCardIds).toHaveLength(2);
-    expect(first.result.gainedCardIds![0]).toBe(first.result.gainedCardIds![1]);
-    expect(first.result.gainedCardIds!.every(id => /^card-\d{2}$/.test(id))).toBe(true);
-    expect(first.result.gainedCardId).toBe(first.result.gainedCardIds![0]);
-    expect(first.state.collection.reduce((n, card) => n + card.quantity, 0)).toBe(2);
-    expect(first.state.collection.filter(card => card.unlocked)).toHaveLength(1);
-    expect(first.state.freeRemaining).toBe(1);
-    const replay = await f.service.action(actor, input);
-    const status = await f.service.actionStatus(actor, input.requestKey);
-    expect(replay.result).toEqual(first.result);
-    expect(status.result).toEqual(first.result);
-    expect(status.state.collection.reduce((n, card) => n + card.quantity, 0)).toBe(2);
-    expect(f.receipts.rows.size).toBe(1);
-    expect(Object.keys(f.document().receipts)).toHaveLength(0);
-    expect(JSON.stringify(first.result)).not.toContain('ssr-');
+    expect(first.result).toMatchObject({ drawAnimation: 'radiance', ssrPity: true, drawCount: 10 });
+    expect(first.result.gainedCardIds).toHaveLength(10);
+    expect(first.result.gainedCardIds!.filter(id => first.state.collection.find(card => card.id === id)!.rarity === 'SSR').length).toBeGreaterThanOrEqual(2);
+    expect(first.state.collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(10);
+    expect(first.state.points.spent).toBe(480);
+    expect((await f.service.action(actor, input)).result).toEqual(first.result);
+    expect((await f.service.actionStatus(actor, input.requestKey)).result).toEqual(first.result);
+    expect(f.receipts.rows.size).toBe(1); expect(JSON.stringify(first.result)).not.toContain('ssr-');
   });
 
   it('serializes concurrent draws and debits the third draw once', async () => {

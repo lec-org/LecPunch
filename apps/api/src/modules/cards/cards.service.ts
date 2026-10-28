@@ -6,6 +6,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { CardGameActionInput, CardGameActionResponse, CardGameView } from '@lecpunch/shared';
+import { CARD_PITY_LIMITS, weeklyDrawPoints } from '@lecpunch/shared';
 import { getWeekKey } from '../../common/utils/time.util';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { User, UserDocument } from '../users/schemas/user.schema';
@@ -22,7 +23,8 @@ const privateId = (id?: string) => CARD_CATALOG.find(card => publicId(card.id) =
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
 export function cardActionHash(input: Omit<CardGameActionInput, 'requestKey'>): string {
-  return hash(JSON.stringify({ action: input.action, cardId: input.cardId ?? null, targetId: input.targetId ?? null, secondTargetId: input.secondTargetId ?? null }));
+  return hash(JSON.stringify({ action: input.action, cardId: input.cardId ?? null, targetId: input.targetId ?? null, secondTargetId: input.secondTargetId ?? null,
+    ...(input.count !== undefined && input.count !== 1 ? { count: input.count } : {}) }));
 }
 export function seededCardRandom(secret: string, key: string): () => number {
   let counter = 0;
@@ -50,13 +52,13 @@ export class CardsService {
     }
     const [members, earned, sessions] = await Promise.all([
       this.users.find({ teamId, status: 'active' }).lean().exec(),
-      this.points.getTeamWeekEarnedPoints(teamId, week),
+      this.points.getTeamWeekBaseSeconds(teamId, week),
       this.attendance.find({ teamId, weekKey: { $in: [...sessionWeeks] }, status: 'completed', durationSeconds: { $gt: 0, $lt: 18000 } })
         .select('_id userId weekKey checkOutAt durationSeconds').lean().exec()
     ]);
     return { now, week, random,
       players: members.map(member => ({ id: String(member._id), username: member.username, name: member.displayName, enrollYear: member.enrollYear })),
-      earnedPoints: earned,
+      baseSeconds: earned,
       sessions: sessions.filter(session => session.checkOutAt).map(session => ({ id: String(session._id), userId: session.userId, weekKey: session.weekKey, checkOutAt: new Date(session.checkOutAt!).getTime(), durationSeconds: session.durationSeconds! }))
     };
   }
@@ -68,7 +70,6 @@ export class CardsService {
   private async view(game: Snapshot, user: AuthUser, ctx: GameContext): Promise<CardGameView> {
     const week = getPlayerWeek(game.state, user.userId, ctx.week);
     const player = game.state.members[user.userId];
-    const earned = ctx.earnedPoints[user.userId] ?? 0, bonus = Math.floor(week.mintedSeconds / 60);
     const own = ctx.players.find(member => member.id === user.userId)!;
     const targetMode = (id: string): 'none' | 'self-or-other' | 'other' | 'two' | 'recipient' =>
       id === 'r-add' ? 'self-or-other' : id === 'sr-chain' ? 'two' : id === 'r-thief' ? 'recipient' :
@@ -76,9 +77,9 @@ export class CardsService {
     return {
       capacityLimited: game.capacityLimited === true,
       entertainmentSeconds: week.entertainmentSeconds,
-      week: ctx.week, points: { earned, bonus, spent: week.spentPoints, balance: Math.max(0, earned + bonus - week.spentPoints) },
+      week: ctx.week, points: weeklyDrawPoints(ctx.baseSeconds[user.userId] ?? 0, week.entertainmentSeconds, week.spentPoints),
       freeRemaining: Math.max(0, 2 - week.freeUsed), giftDraws: week.bonusDraws,
-      pity: { sinceSR: player.pitySR, sinceSSR: player.pitySSR, srRemaining: Math.max(1, 10 - player.pitySR), ssrRemaining: Math.max(1, 50 - player.pitySSR) },
+      pity: { sinceSR: player.pitySR, sinceSSR: player.pitySSR, srRemaining: Math.max(1, CARD_PITY_LIMITS.sr - player.pitySR), ssrRemaining: Math.max(1, CARD_PITY_LIMITS.ssr - player.pitySSR) },
       collection: CARD_CATALOG.map(card => {
         const unlocked = player.discovered.includes(card.id);
         return { id: publicId(card.id), rarity: card.rarity, unlocked, quantity: player.inventory[card.id] ?? 0,
@@ -114,8 +115,19 @@ export class CardsService {
     return this.view(game, user, ctx);
   }
 
+  async getWeekPoints(user: AuthUser, weekKey: string) {
+    const { game, ctx } = await this.refresh(user.teamId);
+    this.assertActor(user, ctx);
+    if (game.capacityLimited) throw new ServiceUnavailableException('综合时长尚未完成可信结算，请联系维护者');
+    const live = game.state.members[user.userId]?.weeks[weekKey];
+    const week = live ?? (await this.storage.archivedWeeks(user.teamId, { userId: user.userId, weekKey }))[0]?.week;
+    const base = weekKey === ctx.week ? ctx.baseSeconds : await this.points.getTeamWeekBaseSeconds(user.teamId, weekKey);
+    return weeklyDrawPoints(base[user.userId] ?? 0, week?.entertainmentSeconds ?? 0, week?.spentPoints ?? 0);
+  }
+
   async action(user: AuthUser, input: CardGameActionInput): Promise<CardGameActionResponse> {
     if (!UUID.test(input.requestKey)) throw new BadRequestException('操作编号必须为 UUID v4');
+    if (input.count !== undefined && (input.action !== 'draw' || ![1, 10].includes(input.count))) throw new BadRequestException('仅抽卡支持 1 次或 10 次抽取');
     const receiptKey = hash(`${user.userId}:${input.requestKey}`), requestHash = cardActionHash(input);
     const privateCardId = input.cardId ? privateId(input.cardId) : undefined;
     if (input.cardId && !privateCardId) throw new BadRequestException('卡片不存在');
@@ -134,14 +146,15 @@ export class CardsService {
       const state = structuredClone(game.state);
       let result;
       try {
-        result = applyGameAction(state, user.userId, { action: input.action, cardId: privateCardId, targetId: input.targetId, secondTargetId: input.secondTargetId }, ctx);
+        result = applyGameAction(state, user.userId, { action: input.action, count: input.count, cardId: privateCardId, targetId: input.targetId, secondTargetId: input.secondTargetId }, ctx);
       } catch (error) { throw new BadRequestException((error as Error).message); }
       const resultView = {
         message: result.message,
         ...(result.gainedCardId ? { gainedCardId: publicId(result.gainedCardId) } : {}),
         ...(result.gainedCardIds ? { gainedCardIds: result.gainedCardIds.map(publicId) } : {}),
         ...(result.drawAnimation ? { drawAnimation: result.drawAnimation } : {}),
-        ...(result.ssrPity !== undefined ? { ssrPity: result.ssrPity } : {})
+        ...(result.ssrPity !== undefined ? { ssrPity: result.ssrPity } : {}),
+        ...(result.drawCount ? { drawCount: result.drawCount, radianceCount: result.radianceCount } : {})
       };
       const receipt: CardActionReceipt = { actorId: user.userId, requestKey: input.requestKey, hash: requestHash, at: new Date(ctx.now).toISOString(), result: resultView };
       if (await this.storage.commit(game, state, ctx.now, { receiptKey, value: receipt })) {

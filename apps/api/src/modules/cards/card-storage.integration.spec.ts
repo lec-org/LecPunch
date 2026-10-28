@@ -15,6 +15,8 @@ import { AttendanceDurationAdjustmentSchema } from '../attendance/schemas/attend
 import { AttendanceAdjustmentBucketSchema } from '../attendance/schemas/attendance-adjustment-bucket.schema';
 import { CardStorageService } from './card-storage.service';
 import { CardsService } from './cards.service';
+import { PointsController } from '../points/points.controller';
+import { StatsService } from '../stats/stats.service';
 import type { AuthUser } from '../auth/types/auth-user.type';
 
 const uri = process.env.LECPUNCH_TEST_MONGO_URI;
@@ -24,6 +26,7 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
   let connection: Connection;
   let games: Model<any>, receipts: Model<any>, weeks: Model<any>, users: Model<any>, attendance: Model<any>, ledger: Model<any>, assessmentWeeks: Model<any>;
   let service: CardsService;
+  let points: PointsService;
   let legacyAdjustments: Model<any>, adjustmentBuckets: Model<any>;
   const actor: AuthUser = { userId: '6a0000000000000000000011', teamId: '6a0000000000000000000001', username: 'test.cards', displayName: 'Cards', role: 'member', enrollYear: 2026 };
   beforeAll(async () => {
@@ -40,7 +43,8 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     await Promise.all([games, receipts, weeks, users, attendance, ledger, assessmentWeeks].map(model => model.init()));
     const storage = new CardStorageService(games, receipts, weeks);
     await Promise.all([legacyAdjustments.init(), adjustmentBuckets.init()]);
-    service = new CardsService(games, users, new PointsService(ledger, legacyAdjustments, adjustmentBuckets), attendance, new ConfigService({ AUTH_SECRET: 'isolated-local-integration-key' }), storage);
+    points = new PointsService(ledger, legacyAdjustments, adjustmentBuckets, attendance);
+    service = new CardsService(games, users, points, attendance, new ConfigService({ AUTH_SECRET: 'isolated-local-integration-key' }), storage);
   });
   beforeEach(async () => {
     vi.restoreAllMocks();
@@ -59,6 +63,44 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     await adjustmentBuckets.updateOne({ teamId: actor.teamId, userId: actor.userId, weekKey }, { $push: { entries: { signedDurationSeconds: -3600 } } });
     expect((await service.getMe(actor)).points.balance).toBe(0);
   });
+  it('combines real attendance and audited seconds before rounding, and both endpoints agree', async () => {
+    const { getWeekKey, getIsoWeekKey } = await import('../../common/utils/time.util');
+    const weekKey = getWeekKey(new Date());
+    await attendance.create({ teamId: actor.teamId, userId: actor.userId, weekKey, status: 'completed', durationSeconds: 59,
+      checkInAt: new Date(), checkOutAt: new Date(), sourceIpAtCheckIn: '127.0.0.1' });
+    await attendance.create({ teamId: actor.teamId, userId: actor.userId, weekKey, status: 'invalidated', durationSeconds: 1200,
+      checkInAt: new Date(), sourceIpAtCheckIn: '127.0.0.1' });
+    await legacyAdjustments.create({ teamId: actor.teamId, userId: actor.userId, weekKey, operation: 'add', durationSeconds: 59,
+      signedDurationSeconds: 59, username: actor.username, previousDurationSeconds: 59, resultingDurationSeconds: 118,
+      createdBy: actor.userId, reason: 'isolated test' });
+    const initial = await service.getMe(actor);
+    await games.updateOne({}, { $set: { [`state.members.${actor.userId}.weeks.${weekKey}.entertainmentSeconds`]: 2,
+      [`state.members.${actor.userId}.weeks.${weekKey}.mintedSeconds`]: 99999 } });
+    const view = await service.getMe(actor);
+    expect(view.points).toMatchObject({ earned: 2, balance: 2, bonus: 0, comprehensiveSeconds: 120 });
+    const response = await new PointsController(points, service).getMine(actor, { week: getIsoWeekKey(new Date()) });
+    expect(response.drawPoints).toEqual({ weekKey: initial.week, ...view.points });
+    expect(response.ledgerScope).toBe('attendance-audit');
+    const stats = new StatsService({ getModel: () => attendance,
+      getManualAdjustmentSummaries: async () => new Map([[`${actor.userId}:${weekKey}`, { manualAdjustmentSeconds: 59 }]]) } as any,
+      { listTeamMembers: async () => [{ id: actor.userId, enrollYear: actor.enrollYear, displayName: actor.displayName }],
+        getMemberKey: () => 'opaque-member' } as any, service);
+    const rows = await stats.getTeamCurrentWeekStats(actor.teamId);
+    expect(rows[0].totalDurationSeconds).toBe(view.points.comprehensiveSeconds);
+    expect(rows[0].sessionsCount).toBe(2);
+  });
+  it('allows only one of two concurrent paid draws when exactly sixty points remain', async () => {
+    const initial = await service.getMe(actor);
+    await adjustmentBuckets.create({ teamId: actor.teamId, userId: actor.userId, weekKey: initial.week, entries: [{ signedDurationSeconds: 3600 }] });
+    await games.updateOne({}, { $set: { [`state.members.${actor.userId}.weeks.${initial.week}.freeUsed`]: 2 } });
+    const results = await Promise.allSettled([1, 2].map(() => service.action(actor, { requestKey: randomUUID(), action: 'draw' })));
+    expect(results.filter(row => row.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(row => row.status === 'rejected')).toHaveLength(1);
+    const view = await service.getMe(actor);
+    expect(view.points).toMatchObject({ earned: 60, spent: 60, balance: 0 });
+    expect(view.collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(1);
+    expect(await receipts.countDocuments()).toBe(1);
+  });
   afterAll(async () => {
     vi.restoreAllMocks();
     if (connection) {
@@ -76,6 +118,20 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     expect((await games.findOne().lean())?.pendingWrite).toBeUndefined();
     expect((await service.action(actor, inputs[0])).result).toEqual(results[0].result);
     await expect(service.action(actor, { ...inputs[0], action: 'gift', cardId: 'card-01', targetId: actor.userId })).rejects.toThrow('同一操作编号');
+  });
+  it('commits concurrent ten-draw retries once and recovers the complete batch after an archival failure', async () => {
+    const { getWeekKey } = await import('../../common/utils/time.util');
+    await adjustmentBuckets.create({ teamId: actor.teamId, userId: actor.userId, weekKey: getWeekKey(new Date()), entries: [{ signedDurationSeconds: 36000 }] });
+    const input = { requestKey: randomUUID(), action: 'draw' as const, count: 10 as const };
+    vi.spyOn(receipts, 'updateOne').mockImplementationOnce(() => { throw new Error('batch archive interrupted'); });
+    await expect(service.action(actor, input)).rejects.toThrow('batch archive interrupted');
+    const results = await Promise.all([service.action(actor, input), service.action(actor, input)]);
+    expect(results[0].result).toEqual(results[1].result);
+    expect(results[0].result.drawCount).toBe(10); expect(await receipts.countDocuments()).toBe(1);
+    const view = await service.getMe(actor);
+    expect(view.points.spent).toBe(480); expect(view.freeRemaining).toBe(0);
+    expect(view.collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(results[0].result.gainedCardIds!.length);
+    expect((await games.findOne().lean())?.pendingWrite).toBeUndefined();
   });
   it('recovers a crash after state commit but before receipt archival without a second debit', async () => {
     const input = { requestKey: randomUUID(), action: 'draw' as const };
