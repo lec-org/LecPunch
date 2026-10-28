@@ -92,10 +92,10 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
       <IdleCardOrbit collection={view.collection} animationState={{ pending: game.busy && game.pending?.action === 'draw', result: game.lastResult }} renderDrawAnimation={renderDrawAnimation} />
       <section className="rounded-2xl border border-gray-200 bg-white p-6" aria-label="本周积分与抽卡">
         <div className="flex flex-wrap items-end justify-between gap-6 border-b border-gray-100 pb-6">
-          <div><p className="text-sm text-gray-500">本周可用抽卡积分</p><p className="mt-2 text-4xl font-medium tabular-nums">{view.points.balance}<span className="ml-2 text-sm font-normal text-gray-500">积分</span></p><p className="mt-3 text-xs text-gray-500">综合时长额度 {view.points.earned} − 已使用 {view.points.spent}</p></div>
+          <div><p className="text-sm text-gray-500">本周可用抽卡积分</p><p className={`mt-2 text-4xl font-medium tabular-nums ${view.points.balance < 0 ? 'text-red-700' : ''}`}>{view.points.balance}<span className="ml-2 text-sm font-normal text-gray-500">积分</span></p><p className="mt-3 text-xs text-gray-500">综合时长额度 {view.points.earned} − 已使用 {view.points.spent}</p>{view.points.balance < 0 && <p className="mt-2 text-xs text-red-700">当前欠额 {Math.abs(view.points.balance)} 积分，后续加时先抵扣差额；免费和赠送抽卡机会仍可使用。</p>}</div>
           <div className="space-y-2"><div className="flex flex-wrap gap-2"><Button disabled={disabled || starved || view.freeRemaining <= 0 && view.giftDraws <= 0 && view.points.balance < 60} loading={game.busy} onClick={() => void game.submit({ action: 'draw' })}>
             <Sparkles className="h-4 w-4" aria-hidden="true" />{view.freeRemaining > 0 ? `免费抽卡（剩 ${view.freeRemaining} 次）` : view.giftDraws > 0 ? `使用赠送机会（剩 ${view.giftDraws} 次）` : '抽取一张 · 60 积分'}
-          </Button><Button variant="outline" disabled={disabled || starved || view.points.balance < tenCost} loading={game.busy} onClick={() => void game.submit({ action: 'draw', count: 10 })}>
+          </Button><Button variant="outline" disabled={disabled || starved || tenCost > 0 && view.points.balance < tenCost} loading={game.busy} onClick={() => void game.submit({ action: 'draw', count: 10 })}>
             <Layers3 className="h-4 w-4" aria-hidden="true" />十连抽 · {tenCost > 0 ? `${tenCost} 积分` : '无需积分'}
           </Button></div><p className="text-xs text-gray-500">每周前两抽免费，之后优先使用赠送机会。</p>
           <p className="text-xs text-gray-500">本次十连：免费 {tenFree} 次 ＋ 赠送 {tenGifts} 次 ＋ {tenCost} 积分；不足十抽不扣费。</p></div>

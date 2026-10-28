@@ -62,7 +62,7 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     expect((await service.getMe(actor)).points).toMatchObject({ earned: 120, spent: 120, balance: 0 });
     expect(await ledger.countDocuments()).toBe(0);
     await adjustmentBuckets.updateOne({ teamId: actor.teamId, userId: actor.userId, weekKey }, { $push: { entries: { signedDurationSeconds: -3600 } } });
-    expect((await service.getMe(actor)).points.balance).toBe(0);
+    expect((await service.getMe(actor)).points.balance).toBe(-60);
   });
   it('atomically recovers gift delivery and concurrent retries into exactly one card and notice', async () => {
     const receiver = { ...actor, userId: '6a0000000000000000000012', username: 'test.receiver', displayName: 'Receiver' };
@@ -332,6 +332,50 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     expect(view.points).toMatchObject({ earned: 60, spent: 60, balance: 0 });
     expect(view.collection.reduce((sum, card) => sum + card.quantity, 0)).toBe(1);
     expect(await receipts.countDocuments()).toBe(1);
+  });
+  it('serializes an incoming deduction against a paid ten draw without issuing unaffordable extra cards', async () => {
+    const attacker={...actor,userId:'6a0000000000000000000012',username:'test.attacker',displayName:'Attacker'};
+    await users.create({_id:attacker.userId,teamId:attacker.teamId,username:attacker.username,displayName:attacker.displayName,enrollYear:attacker.enrollYear});
+    const initial=await service.getMe(actor);
+    await adjustmentBuckets.create({teamId:actor.teamId,userId:actor.userId,weekKey:initial.week,entries:[{signedDurationSeconds:36000}]});
+    await games.updateOne({},{$set:{[`state.members.${actor.userId}.weeks.${initial.week}.freeUsed`]:2,[`state.members.${attacker.userId}.inventory.n-reduce`]:1}});
+    // Isolate the balance race: these draws yield acceleration, not newly active passive defenses.
+    const originalContext=(service as any).context.bind(service);
+    vi.spyOn(service as any,'context').mockImplementation(async (...args:any[])=>({...await originalContext(...args),random:()=>0}));
+    const [draw,attack]=await Promise.allSettled([
+      service.action(actor,{requestKey:randomUUID(),action:'draw',count:10}),
+      service.action(attacker,{requestKey:randomUUID(),action:'use',cardId:'card-02'})
+    ]);
+    expect(attack.status).toBe('fulfilled');
+    if(draw.status==='rejected')expect(draw.reason.message).toContain('积分不足');
+    const view=await service.getMe(actor), succeeded=draw.status==='fulfilled';
+    expect(view.points).toMatchObject({earned:570,spent:succeeded?600:0,balance:succeeded?-30:570});
+    expect(view.collection.reduce((sum,card)=>sum+card.quantity,0)).toBe(succeeded?10:0);
+    expect(await receipts.countDocuments()).toBe(succeeded?2:1);
+  });
+  it('recovers a free ten draw with negative points and radiance without duplicating either SSR', async () => {
+    const initial=await service.getMe(actor);
+    await games.updateOne({},{$set:{
+      [`state.members.${actor.userId}.weeks.${initial.week}.entertainmentSeconds`]:-3600,
+      [`state.members.${actor.userId}.weeks.${initial.week}.spentPoints`]:60,
+      [`state.members.${actor.userId}.weeks.${initial.week}.bonusDraws`]:8,
+      [`state.members.${actor.userId}.pitySSR`]:69
+    }});
+    const original=(service as any).context.bind(service);
+    vi.spyOn(service as any,'context').mockImplementation(async (...args:any[])=>({...await original(...args),random:()=>0}));
+    const input={requestKey:randomUUID(),action:'draw' as const,count:10 as const};
+    vi.spyOn(receipts,'updateOne').mockImplementationOnce(()=>{throw new Error('negative ten receipt interrupted');});
+    await expect(service.action(actor,input)).rejects.toThrow('negative ten receipt interrupted');
+    const recovered=await service.action(actor,input), replay=await service.action(actor,input);
+    expect(replay.result).toEqual(recovered.result);
+    expect(recovered.result).toMatchObject({drawCount:10,drawAnimation:'radiance'});
+    expect(recovered.result.gainedCardIds).toHaveLength(10);
+    expect(recovered.result.gainedCardIds!.filter(id=>recovered.state.collection.find(card=>card.id===id)?.rarity==='SSR')).toHaveLength(2);
+    const view=await service.getMe(actor);
+    expect(view.points).toMatchObject({earned:-60,spent:60,balance:-120});
+    expect(view.collection.reduce((sum,card)=>sum+card.quantity,0)).toBe(10);
+    expect(view.freeRemaining).toBe(0);expect(view.giftDraws).toBe(0);expect(await receipts.countDocuments()).toBe(1);
+    expect((await games.findOne().lean())?.pendingWrite).toBeUndefined();
   });
   afterAll(async () => {
     vi.restoreAllMocks();

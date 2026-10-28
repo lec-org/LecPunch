@@ -42,6 +42,12 @@ describe('PointsService', () => {
     expect(await service.getTeamWeekBaseSeconds('team-1', '2026-10-26')).toEqual({ 'user-1': 118 });
     expect(aggregate).not.toHaveBeenCalled();
   });
+  it('returns signed manual debt without changing the immutable attendance audit', async () => {
+    attendanceAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ _id: 'user-1', seconds: 600 }]) });
+    bucketAggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ _id: { userId: 'user-1', weekKey: '2026-10-26' }, seconds: -1800 }]) });
+    expect(await service.getTeamWeekBaseSeconds('team-1','2026-10-26')).toEqual({'user-1':-1200});
+    expect(findOneAndUpdate).not.toHaveBeenCalled();
+  });
 
   it('updates the compatible points endpoint while keeping historical adjustments out of this week', async () => {
     aggregate.mockReturnValue({ exec: vi.fn().mockResolvedValue([{ totalPoints: 0 }]) });

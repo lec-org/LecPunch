@@ -64,7 +64,7 @@ describe('full active-card effect matrix', () => {
     'r-add': f => { f.use('r-add', b); expect(f.time(b)).toBe(7800); },
     'r-steal': f => { f.use('r-steal', b); expect([f.time(a), f.time(b)]).toEqual([7800, 4200]); },
     'r-mystery': f => { const result = f.use('r-mystery'); expect(result.gainedCardId).toBe('n-acceleration'); expect(f.state.members[a].inventory['n-acceleration']).toBe(1); },
-    'r-charity': f => { f.use('r-charity'); expect([f.time(a), f.time(b), f.time(c)]).toEqual([5400, 6300, 6300]); },
+    'r-charity': f => { f.use('r-charity'); expect([f.time(a), f.time(b), f.time(c)]).toEqual([1800, 8100, 8100]); },
     'r-skip': f => {
       f.use('r-skip', b); expect(getPlayerWeek(f.state, b, f.context.week).lockedUntil).toBe(f.context.now + 3600000);
       expect(() => f.use('r-add', b, undefined, b)).toThrow('乐不思蜀');
@@ -80,8 +80,8 @@ describe('full active-card effect matrix', () => {
     'sr-invasion': f => { f.own(b, 'n-acceleration'); f.use('sr-invasion'); expect(f.state.members[b].inventory['n-acceleration']).toBe(0); expect([f.time(b), f.time(c)]).toEqual([6000, 5100]); },
     'sr-redking': f => { f.own(b, 'n-shield'); f.own(b, 'r-blade'); f.use('sr-redking', b); expect(f.time(b)).toBe(4200); expect(f.state.members[b].inventory['r-blade']).toBe(1); },
     'ssr-harvest': f => { f.use('ssr-harvest'); expect([a, b, c, senior].map(id => getPlayerWeek(f.state, id, f.context.week).bonusDraws)).toEqual([2, 2, 2, 0]); },
-    'ssr-invincible': f => { f.use('ssr-invincible'); f.use('r-add', a, undefined, b); expect(f.time(a)).toBe(6000); expect(getPlayerWeek(f.state, a, f.context.week).immuneUntil).toBe(f.context.now + 86400000); },
-    'ssr-arrows': f => { f.use('ssr-arrows', b); expect([f.time(b), f.time(c)]).toEqual([4800, 5400]); }
+    'ssr-invincible': f => { f.use('ssr-invincible'); f.use('r-add', a, undefined, b); expect(f.time(a)).toBe(7800); expect(getPlayerWeek(f.state, a, f.context.week).immuneUntil).toBe(f.context.now + 86400000); },
+    'ssr-arrows': f => { f.use('ssr-arrows', b); expect([f.time(b), f.time(c)]).toEqual([4200, 5100]); }
   };
   it('covers every active card exactly once', () => {
     expect(Object.keys(checks).sort()).toEqual(CARD_CATALOG.filter(card => !['n-shield', 'r-blade', 'sr-reflect'].includes(card.id)).map(card => card.id).sort());

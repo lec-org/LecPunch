@@ -425,7 +425,7 @@ describe('CardsService atomic actions and private collection', () => {
     const initial = await f.service.getMe(actor);
     Object.assign(f.document().state.members[actor.userId].weeks[initial.week], { entertainmentSeconds: -2700, mintedSeconds: 7200, spentPoints: 30 });
     const view = await f.service.getMe(actor);
-    expect(view.points).toMatchObject({ rule: 'comprehensive-v1', comprehensiveSeconds: 900, earned: 15, bonus: 0, spent: 30, balance: 0 });
+    expect(view.points).toMatchObject({ rule: 'comprehensive-v1', comprehensiveSeconds: 900, earned: 15, bonus: 0, spent: 30, balance: -15 });
     expect(await f.service.getWeekPoints(actor, view.week)).toEqual(view.points);
     f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 5400 });
     expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 45, spent: 30, balance: 15 });
@@ -472,7 +472,7 @@ describe('CardsService atomic actions and private collection', () => {
     expect(drawn.state.points).toMatchObject({ earned: 120, spent: 60, balance: 60 });
     expect((await f.service.action(actor, input)).state.points.spent).toBe(60);
     f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 1800 });
-    expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 30, spent: 60, balance: 0 });
+    expect((await f.service.getMe(actor)).points).toMatchObject({ earned: 30, spent: 60, balance: -30 });
     await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('积分不足');
     f.points.getTeamWeekBaseSeconds.mockResolvedValue({ [actor.userId]: 7200 });
     expect((await f.service.getMe(actor)).points.balance).toBe(60);
