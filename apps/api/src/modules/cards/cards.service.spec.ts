@@ -20,7 +20,12 @@ const query = (get: () => any): any => {
 };
 function archiveModel(keyFields: string[]) {
   const rows = new Map<string, any>(); let fail = false;
-  const match = (row: any, where: any) => Object.entries(where).every(([key, value]) => row[key] === value);
+  const match = (row: any, where: any) => Object.entries(where).every(([key, value]: [string, any]) => {
+    const actual = key.split('.').reduce((item, part) => item?.[part], row);
+    if (value && typeof value === 'object' && '$exists' in value) return (actual !== undefined) === value.$exists;
+    if (value && typeof value === 'object' && '$in' in value) return value.$in.includes(actual);
+    return actual === value;
+  });
   const model: any = {
     init: async () => undefined,
     findOne: (where: any) => query(() => [...rows.values()].find(row => match(row, where)) ?? null),
@@ -32,6 +37,12 @@ function archiveModel(keyFields: string[]) {
       if (old && !match(old, where)) throw Object.assign(new Error('duplicate archive'), { code: 11000 });
       if (!old) rows.set(key, structuredClone(update.$setOnInsert));
       return { modifiedCount: old ? 0 : 1 };
+    } }),
+    updateMany: (where: any, update: any) => ({ exec: async () => {
+      if (fail) throw new Error('archive unavailable');
+      let modifiedCount = 0;
+      for (const row of rows.values()) if (match(row, where)) { Object.assign(row, structuredClone(update.$set)); modifiedCount++; }
+      return { modifiedCount };
     } }),
     bulkWrite: async (operations: any[]) => { for (const { updateOne: op } of operations) await model.updateOne(op.filter, op.update).exec(); }
   };
@@ -74,6 +85,64 @@ describe('CardsService atomic actions and private collection', () => {
   let f: ReturnType<typeof fixture>;
   beforeEach(() => { f = fixture(); });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it('accepts an identical receipt inserted by concurrent recovery after the upsert started', async () => {
+    const original = f.receipts.model.updateOne.bind(f.receipts.model);
+    vi.spyOn(f.receipts.model, 'updateOne').mockImplementationOnce(((where: any, update: any) => ({ exec: async () => {
+      await original(where, update).exec();
+      throw Object.assign(new Error('concurrent duplicate'), { code: 11000 });
+    } })) as any);
+    const input = { requestKey: randomUUID(), action: 'draw' as const };
+    const first = await f.service.action(actor, input);
+    expect((await f.service.action(actor, input)).result).toEqual(first.result);
+    expect(f.receipts.rows.size).toBe(1);
+    expect(first.state.freeRemaining).toBe(1);
+  });
+  it('does not swallow a duplicate whose saved receipt has different content', async () => {
+    const original = f.receipts.model.updateOne.bind(f.receipts.model);
+    vi.spyOn(f.receipts.model, 'updateOne').mockImplementationOnce(((where: any, update: any) => ({ exec: async () => {
+      await original(where, { $setOnInsert: { ...update.$setOnInsert, contentHash: 'different-confirmed-content' } }).exec();
+      throw Object.assign(new Error('conflicting duplicate'), { code: 11000 });
+    } })) as any);
+    await expect(f.service.action(actor, { requestKey: randomUUID(), action: 'draw' })).rejects.toThrow('conflicting duplicate');
+    expect(f.document().pendingWrite).toBeDefined();
+  });
+
+  it('returns stable target names and the card name in the use receipt', async () => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.other', displayName: '其他成员', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    f.document().state.members[actor.userId].inventory['n-reduce'] = 1;
+    const input = { requestKey: randomUUID(), action: 'use' as const, cardId: 'card-02' };
+    const response = await f.service.action(actor, input);
+    expect(response.result.actionCard?.name).toBe('减时长');
+    expect(response.result.effects?.[0]).toMatchObject({ target: { id: other._id, username: other.username, displayName: other.displayName }, outcome: 'applied', deltaSeconds: -1800 });
+    expect(response.result.message).toContain('其他成员（test.other）');
+    other.displayName = '改名后的成员';
+    expect((await f.service.action(actor, input)).result).toEqual(response.result);
+    expect(f.document().state.members[actor.userId].inventory['n-reduce']).toBe(0);
+  });
+  it('delivers a gift notice once and lets only its recipient acknowledge it without granting again', async () => {
+    const other = { _id: '6a0000000000000000000012', username: 'test.other', displayName: '其他成员', enrollYear: 2025 };
+    f.members.push(other); await f.service.getMe(actor);
+    f.document().state.members[actor.userId].inventory['n-reduce'] = 1;
+    f.document().state.members[actor.userId].discovered.push('n-reduce');
+    const input = { requestKey: randomUUID(), action: 'gift' as const, cardId: 'card-02', targetId: other._id };
+    const sent = await f.service.action(actor, input);
+    const receiver = { ...actor, userId: other._id, username: other.username };
+    const inbox = (await f.service.getMe(receiver)).incomingGifts!;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]).toMatchObject({ sender: { username: actor.username }, card: { id: 'card-02', name: '减时长' } });
+    expect(await f.service.acknowledgeGifts(actor, [inbox[0].id])).toEqual({ acknowledged: 0 });
+    expect(await f.service.acknowledgeGifts(receiver, [inbox[0].id])).toEqual({ acknowledged: 1 });
+    expect(await f.service.acknowledgeGifts(receiver, [inbox[0].id])).toEqual({ acknowledged: 0 });
+    expect((await f.service.getMe(receiver)).incomingGifts).toEqual([]);
+    expect(f.document().state.members[other._id].inventory['n-reduce']).toBe(1);
+    expect((await f.service.action(actor, input)).result).toEqual(sent.result);
+  });
+  it.each([[], ['bad'], Array(21).fill('a'.repeat(64))])('rejects invalid gift acknowledgement IDs', async ids => {
+    await expect(f.service.acknowledgeGifts(actor, ids)).rejects.toThrow('有效赠卡通知');
+    expect(f.receipts.rows.size).toBe(0);
+  });
 
   it('exposes one comprehensive quota, ignores old minted credits and retains spent debt', async () => {
     const initial = await f.service.getMe(actor);

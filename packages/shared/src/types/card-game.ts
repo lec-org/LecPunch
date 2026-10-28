@@ -18,6 +18,20 @@ export interface CardCollectionItem {
 }
 export interface CardGamePlayer { id: string; username: string; displayName: string; enrollYear: number }
 export interface CardGameEvent { id: string; at: string; message: string }
+export interface CardEffectPlayer { id: string; username: string; displayName: string }
+export interface CardActionEffect {
+  target: CardEffectPlayer;
+  actualTarget?: CardEffectPlayer;
+  outcome: 'applied' | 'blocked' | 'reflected' | 'no-effect';
+  kind: 'time' | 'cards' | 'status' | 'judgement';
+  deltaSeconds?: number;
+  detail?: string;
+}
+export interface CardGiftNotice {
+  id: string; at: string;
+  sender: CardEffectPlayer;
+  card: { id: string; name: string; rarity: CardRarity };
+}
 export interface CardGameView {
   entertainmentSeconds: number;
   capacityLimited?: boolean;
@@ -31,6 +45,7 @@ export interface CardGameView {
   players: CardGamePlayer[];
   statuses: { acceleration: boolean; immuneUntil: string | null; lockedUntil: string | null; starvedUntil: string | null };
   events: CardGameEvent[];
+  incomingGifts?: CardGiftNotice[];
 }
 export interface CardGameActionInput {
   requestKey: string;
@@ -42,6 +57,9 @@ export interface CardGameActionInput {
 }
 export interface CardGameActionResult {
   message: string;
+  action?: 'draw' | 'use' | 'gift';
+  actionCard?: { id: string; name: string; rarity: CardRarity };
+  effects?: CardActionEffect[];
   gainedCardId?: string;
   gainedCardIds?: string[];
   drawAnimation?: 'blue' | 'purple' | 'gold' | 'radiance';

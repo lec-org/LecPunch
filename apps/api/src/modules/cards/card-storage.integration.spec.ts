@@ -63,6 +63,41 @@ suite('Card outbox and immutable archives on standalone Mongo', () => {
     await adjustmentBuckets.updateOne({ teamId: actor.teamId, userId: actor.userId, weekKey }, { $push: { entries: { signedDurationSeconds: -3600 } } });
     expect((await service.getMe(actor)).points.balance).toBe(0);
   });
+  it('atomically recovers gift delivery and concurrent retries into exactly one card and notice', async () => {
+    const receiver = { ...actor, userId: '6a0000000000000000000012', username: 'test.receiver', displayName: 'Receiver' };
+    await users.create({ _id: receiver.userId, teamId: actor.teamId, username: receiver.username, displayName: receiver.displayName, enrollYear: actor.enrollYear });
+    await service.getMe(actor);
+    await games.updateOne({}, { $set: { [`state.members.${actor.userId}.inventory.n-reduce`]: 1, [`state.members.${actor.userId}.discovered`]: ['n-reduce'] } });
+    const input = { requestKey: randomUUID(), action: 'gift' as const, cardId: 'card-02', targetId: receiver.userId };
+    vi.spyOn(receipts, 'updateOne').mockImplementationOnce(() => { throw new Error('gift archive interrupted'); });
+    await expect(service.action(actor, input)).rejects.toThrow('gift archive interrupted');
+    const results = await Promise.all([service.action(actor, input), service.action(actor, input)]);
+    expect(results[0].result).toEqual(results[1].result);
+    const view = await service.getMe(receiver), gifts = view.incomingGifts!;
+    expect(gifts).toHaveLength(1);
+    expect(view.collection.find(card => card.id === 'card-02')).toMatchObject({ unlocked: true, quantity: 1 });
+    expect((await service.getMe(actor)).incomingGifts).toEqual([]);
+    const before = await receipts.findOne({ receiptKey: gifts[0].id }).lean();
+    expect(await service.acknowledgeGifts(actor, [gifts[0].id])).toEqual({ acknowledged: 0 });
+    expect(await service.acknowledgeGifts(receiver, [gifts[0].id])).toEqual({ acknowledged: 1 });
+    expect(await service.acknowledgeGifts(receiver, [gifts[0].id])).toEqual({ acknowledged: 0 });
+    const after = await receipts.findOne({ receiptKey: gifts[0].id }).lean();
+    expect(after.contentHash).toBe(before.contentHash); expect(after.result).toEqual(before.result);
+    expect((await service.getMe(receiver)).incomingGifts).toEqual([]);
+    expect((await service.getMe(receiver)).collection.find(card => card.id === 'card-02')?.quantity).toBe(1);
+    expect((await service.action(actor, input)).result).toEqual(results[0].result);
+  });
+  it('does not expose gifts to another team and does not filter unread notices by current week', async () => {
+    const other = { ...actor, userId: '6a0000000000000000000014', teamId: '6a0000000000000000000002', username: 'test.foreign' };
+    await users.create({ _id: other.userId, teamId: other.teamId, username: other.username, displayName: other.displayName, enrollYear: other.enrollYear });
+    const id = 'a'.repeat(64), at = '2026-01-05T00:00:00Z';
+    await receipts.create({ teamId: actor.teamId, receiptKey: id, contentHash: 'test-only', actorId: 'sender', requestKey: randomUUID(), hash: 'hash', at,
+      result: { message: 'old local gift' }, gift: { recipientId: actor.userId, notice: { at, sender: { id: 'sender', username: 'test.sender', displayName: 'Sender' }, card: { id: 'card-02', name: '减时长', rarity: 'N' } } } });
+    expect((await service.getMe(actor)).incomingGifts?.map(gift => gift.id)).toEqual([id]);
+    expect((await service.getMe(other)).incomingGifts).toEqual([]);
+    expect(await service.acknowledgeGifts(other, [id])).toEqual({ acknowledged: 0 });
+    expect((await service.getMe(actor)).incomingGifts).toHaveLength(1);
+  });
   it('combines real attendance and audited seconds before rounding, and both endpoints agree', async () => {
     const { getWeekKey, getIsoWeekKey } = await import('../../common/utils/time.util');
     const weekKey = getWeekKey(new Date());

@@ -6,7 +6,7 @@ import { useAuthStore } from '@/app/store/auth-store';
 import { createUserFixture } from '@/test/user-fixture';
 import { CardsPage } from './CardsPage';
 
-const api = vi.hoisted(() => ({ getCardGame: vi.fn(), performCardAction: vi.fn(), getCardAction: vi.fn(), getCardArt: vi.fn() }));
+const api = vi.hoisted(() => ({ getCardGame: vi.fn(), performCardAction: vi.fn(), getCardAction: vi.fn(), getCardArt: vi.fn(), acknowledgeCardGifts: vi.fn() }));
 vi.mock('@/features/cards/cards.api', () => api);
 const originalObjectUrlDescriptors = Object.fromEntries(['createObjectURL', 'revokeObjectURL'].map(key => [key, Object.getOwnPropertyDescriptor(URL, key)]));
 const makeView = (): CardGameView => ({
@@ -40,6 +40,74 @@ afterEach(() => {
   }
 });
 describe('CardsPage authenticated collection', () => {
+  it('exposes a direct use button and displays the selected and reflected targets after confirmation', async () => {
+    api.getCardGame.mockResolvedValue(acquired().state);
+    api.performCardAction.mockResolvedValue({ ...acquired(), result: { message: '用卡已确认', action: 'use',
+      actionCard: { id: 'card-01', name: '加速', rarity: 'N' }, effects: [{
+        target: { id: 'member-2', username: 'other', displayName: '随机目标' }, actualTarget: { id: 'member-1', username: 'member', displayName: '实际目标' },
+        outcome: 'reflected', kind: 'time', deltaSeconds: -1800
+      }] } });
+    render(<CardsPage />); await userEvent.click(await screen.findByRole('button', { name: '使用加速' }));
+    await userEvent.click(screen.getByRole('button', { name: '确认使用一张' }));
+    const result = await screen.findByRole('dialog', { name: '用卡结果' });
+    expect(within(result).getByText('随机目标')).toBeInTheDocument();
+    expect(within(result).getByText(/被反弹，实际作用于 实际目标/)).toBeInTheDocument();
+    expect(within(result).getByText('扣除 00:30:00 综合时长')).toBeInTheDocument();
+    await userEvent.click(within(result).getByRole('button', { name: '知道了' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(api.performCardAction).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('button', { name: '赠送加速' }));
+    expect(screen.queryByText('用卡已确认')).not.toBeInTheDocument();
+  });
+  it('opens gifting directly from the inventory button', async () => {
+    api.getCardGame.mockResolvedValue(acquired().state); render(<CardsPage />);
+    await userEvent.click(await screen.findByRole('button', { name: '赠送加速' }));
+    expect(screen.getByRole('combobox', { name: '赠送给' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '确认赠送一张' })).toBeDisabled();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '赠送给' }), 'member-2');
+    expect(screen.getByRole('button', { name: '确认赠送一张' })).toBeEnabled();
+  });
+  it('shows received cards with their sender on entry and acknowledges without granting a second copy', async () => {
+    const state = acquired().state;
+    state.incomingGifts = [{ id: 'a'.repeat(64), at: '2026-10-28T03:00:00Z', sender: { id: 'member-2', username: 'other', displayName: '赠送者' }, card: { id: 'card-01', name: '加速', rarity: 'N' } }];
+    api.getCardGame.mockResolvedValueOnce(state).mockResolvedValue({ ...state, incomingGifts: [] });
+    api.acknowledgeCardGifts.mockResolvedValue({ acknowledged: 1 });
+    render(<CardsPage />);
+    const dialog = await screen.findByRole('dialog', { name: '你收到了赠送的卡片' });
+    expect(within(dialog).getByText('来自 赠送者（other）')).toBeInTheDocument();
+    expect(within(dialog).getByText(/无需再次领取/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '知道了，查看卡牌' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(api.acknowledgeCardGifts).toHaveBeenCalledWith(['a'.repeat(64)]);
+    expect(screen.getByText('持有 1')).toBeInTheDocument();
+    expect(api.performCardAction).not.toHaveBeenCalled();
+  });
+  it('retains the gift popup on acknowledgement failure and retries the same identifiers', async () => {
+    const state = acquired().state;
+    state.incomingGifts = [{ id: 'b'.repeat(64), at: '2026-10-28T03:00:00Z', sender: { id: 'member-2', username: 'other', displayName: '赠送者' }, card: { id: 'card-01', name: '加速', rarity: 'N' } }];
+    api.getCardGame.mockResolvedValue(state);
+    api.acknowledgeCardGifts.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce({ acknowledged: 1 });
+    render(<CardsPage />);
+    const dialog = await screen.findByRole('dialog', { name: '你收到了赠送的卡片' });
+    await userEvent.click(within(dialog).getByRole('button', { name: '知道了，查看卡牌' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/已读状态尚未确认/);
+    expect(dialog).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '知道了，查看卡牌' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(api.acknowledgeCardGifts.mock.calls).toEqual([[['b'.repeat(64)]], [['b'.repeat(64)]]]);
+    expect(api.performCardAction).not.toHaveBeenCalled();
+  });
+  it('closing a gift popup leaves it unread for the next visit', async () => {
+    const state = acquired().state;
+    state.incomingGifts = [{ id: 'c'.repeat(64), at: '2026-10-28T03:00:00Z', sender: { id: 'member-2', username: 'other', displayName: '赠送者' }, card: { id: 'card-01', name: '加速', rarity: 'N' } }];
+    api.getCardGame.mockResolvedValue(state);
+    const first = render(<CardsPage />);
+    await userEvent.click(await screen.findByRole('button', { name: '稍后再看' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(api.acknowledgeCardGifts).not.toHaveBeenCalled();
+    first.unmount(); render(<CardsPage />);
+    expect(await screen.findByRole('dialog', { name: '你收到了赠送的卡片' })).toBeInTheDocument();
+  });
   it('shows the full ten-draw cost and disables a batch when the balance cannot cover it', async () => {
     render(<CardsPage />);
     expect(await screen.findByRole('button', { name: '十连抽 · 480 积分' })).toBeDisabled();

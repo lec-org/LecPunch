@@ -266,6 +266,29 @@ describe('card collection and economy', () => {
 });
 
 describe('card application and defenses', () => {
+  it('reports the selected random target, blocked outcome and actual reflected target', () => {
+    const { state, context } = fixture();
+    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, actualTargetId: b, outcome: 'applied', deltaSeconds: -1800 });
+    own(state, b, 'n-shield');
+    expect(use(state, context, 'n-reduce').effects?.[0]).toMatchObject({ targetId: b, outcome: 'blocked', deltaSeconds: 0 });
+    own(state, b, 'sr-reflect');
+    expect(use(state, context, 'r-steal').effects?.[0]).toMatchObject({ targetId: b, actualTargetId: a, outcome: 'reflected', deltaSeconds: -1800 });
+  });
+  it('reports lightning username-order misses and the first successful judgement', () => {
+    const { state, context } = fixture(); const rolls = [0.9, 0]; context.random = () => rolls.shift() ?? 0;
+    expect(use(state, context, 'sr-lightning').effects).toEqual([
+      { targetId: b, kind: 'judgement', outcome: 'no-effect', detail: '雷电判定未命中' },
+      { targetId: c, actualTargetId: c, kind: 'time', outcome: 'applied', deltaSeconds: -3600 }
+    ]);
+  });
+  it('does not attribute an older checkout acceleration to the card currently used', () => {
+    const { state, context } = fixture();
+    getPlayerWeek(state, c, context.week).accelerationAt = context.now - 1000;
+    context.sessions = [{ id: 'checkout-c', userId: c, weekKey: context.week, durationSeconds: 600, checkOutAt: context.now }];
+    const result = use(state, context, 'n-reduce');
+    expect(getPlayerWeek(state, c, context.week).entertainmentSeconds).toBe(90);
+    expect(result.effects?.map(effect => effect.targetId)).toEqual([b]);
+  });
   it('reduction and steal may make net time negative without a separate minted balance', () => {
     const {state,context}=fixture();use(state,context,'n-reduce');use(state,context,'r-steal');
     expect(getPlayerWeek(state,b,context.week).entertainmentSeconds).toBe(-3600);

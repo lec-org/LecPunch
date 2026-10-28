@@ -42,9 +42,19 @@ export class CardStorageService implements OnModuleInit {
   private async saveReceipt(teamId: string, receiptKey: string, value: CardActionReceipt) {
     // A conflicting immutable copy must fail closed, never overwrite an already confirmed result.
     const contentHash = digest(value);
-    await this.actions.updateOne({ teamId, receiptKey, contentHash }, {
-      $setOnInsert: { teamId, receiptKey, contentHash, ...value }
-    }, { upsert: true }).exec();
+    try {
+      await this.actions.updateOne({ teamId, receiptKey, contentHash }, {
+        $setOnInsert: { teamId, receiptKey, contentHash, ...value }
+      }, { upsert: true }).exec();
+    } catch (error) {
+      if ((error as { code?: number }).code === 11000) {
+        // Another recovery may have inserted the same immutable receipt after
+        // our upsert began. Accept only its exact content, never a conflicting row.
+        const existing = await this.actions.findOne({ teamId, receiptKey }).select('contentHash').lean().exec();
+        if (existing?.contentHash === contentHash) return;
+      }
+      throw error;
+    }
   }
 
   async load(teamId: string, week: string): Promise<CardSnapshot> {
@@ -136,6 +146,20 @@ export class CardStorageService implements OnModuleInit {
     for (const [key, receipt] of Object.entries(game.receipts)) if (receipt.actorId === actorId) combined.set(key, { ...receipt, receiptKey: key });
     return [...combined.values()].sort((a, b) => b.at.localeCompare(a.at) || a.receiptKey.localeCompare(b.receiptKey)).slice(0, 20)
       .map(row => ({ id: row.receiptKey, at: row.at, message: row.result.message }));
+  }
+
+  async incomingGifts(teamId: string, recipientId: string) {
+    // Delivery is already durable before pendingWrite is cleared. Opening or
+    // acknowledging a notice never grants a second copy of its card.
+    const rows = await this.actions.find({ teamId, 'gift.recipientId': recipientId, giftReadAt: { $exists: false } })
+      .sort({ at: 1, receiptKey: 1 }).limit(20).lean().exec();
+    return rows.filter(row => row.gift).map(row => ({ id: row.receiptKey, ...row.gift!.notice }));
+  }
+
+  async acknowledgeGifts(teamId: string, recipientId: string, ids: string[]) {
+    const saved = await this.actions.updateMany({ teamId, 'gift.recipientId': recipientId,
+      receiptKey: { $in: ids }, giftReadAt: { $exists: false } }, { $set: { giftReadAt: new Date() } }).exec();
+    return { acknowledged: saved.modifiedCount };
   }
 
   archivedWeeks(teamId: string, filter: { userId?: string; weekKey?: string }) {

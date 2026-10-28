@@ -20,6 +20,7 @@ export const useCardGame = (identity: string) => {
   const [pending, setPending] = useState<CardGameActionInput | null>(null);
   const [lastResult, setLastResult] = useState<CardGameActionResult | null>(null);
   const [drawReveal, setDrawReveal] = useState<CardGameActionResponse | null>(null);
+  const [actionReveal, setActionReveal] = useState<{ action: 'use' | 'gift'; response: CardGameActionResponse } | null>(null);
   const revealRef = useRef<CardGameActionResponse | null>(null);
   const alive = useRef(true), gate = useRef(false), readId = useRef(0);
   const pendingRef = useRef<CardGameActionInput | null>(null), lastAttempt = useRef<CardGameActionInput | null>(null);
@@ -31,11 +32,15 @@ export const useCardGame = (identity: string) => {
   const apply = useCallback((result: CardGameActionResponse) => {
     // Invalidate any read started before this committed mutation.
     readId.current += 1;
-    const draw = (pendingRef.current ?? lastAttempt.current)?.action === 'draw';
+    const action = (pendingRef.current ?? lastAttempt.current)?.action ?? result.result.action;
+    const draw = action === 'draw';
     if (draw && result.result.drawAnimation) {
       // The response is already committed. Keep its new names/collection behind the reveal.
       revealRef.current = result; setDrawReveal(result); setSuccess('');
-    } else { setView(result.state); setLastResult(draw ? result.result : null); setSuccess(result.result.message); }
+    } else {
+      setView(result.state); setLastResult(draw ? result.result : null); setSuccess(result.result.message);
+      if (action === 'use' || action === 'gift') setActionReveal({ action, response: result });
+    }
     setError(''); setLoading(false);
     storePending(null); lastAttempt.current = null;
   }, [storePending]);
@@ -78,6 +83,8 @@ export const useCardGame = (identity: string) => {
     revealRef.current = null; setDrawReveal(null); readId.current += 1;
     setView(result.state); setLastResult(result.result); setSuccess(result.result.message);
   }, []);
-  return { view, loading, busy, error, success, pending, lastResult, drawReveal, finishReveal, refresh, submit, verify,
+  return { view, loading, busy, error, success, pending, lastResult, drawReveal, finishReveal, actionReveal,
+    finishActionReveal: () => setActionReveal(null),
+    clearFeedback: () => { setSuccess(''); if (!pendingRef.current) setError(''); }, refresh, submit, verify,
     retry: () => pendingRef.current && submit(pendingRef.current, true) };
 };

@@ -71,6 +71,7 @@ export class CardsService {
     const week = getPlayerWeek(game.state, user.userId, ctx.week);
     const player = game.state.members[user.userId];
     const own = ctx.players.find(member => member.id === user.userId)!;
+    const [events, incomingGifts] = await Promise.all([this.storage.events(game, user.userId), this.storage.incomingGifts(user.teamId, user.userId)]);
     const targetMode = (id: string): 'none' | 'self-or-other' | 'other' | 'two' | 'recipient' =>
       id === 'r-add' ? 'self-or-other' : id === 'sr-chain' ? 'two' : id === 'r-thief' ? 'recipient' :
       ['r-skip', 'sr-famine', 'sr-redking', 'ssr-arrows'].includes(id) ? 'other' : 'none';
@@ -88,7 +89,7 @@ export class CardsService {
       }),
       players: ctx.players.filter(member => member.enrollYear === own.enrollYear).map(member => ({ id: member.id, username: member.username, displayName: member.name, enrollYear: member.enrollYear })),
       statuses: { acceleration: week.accelerationAt !== undefined, immuneUntil: this.futureDate(week.immuneUntil, ctx.now), lockedUntil: this.futureDate(week.lockedUntil, ctx.now), starvedUntil: this.futureDate(week.starvedUntil, ctx.now) },
-      events: await this.storage.events(game, user.userId)
+      events, incomingGifts
     };
   }
 
@@ -113,6 +114,14 @@ export class CardsService {
   async getMe(user: AuthUser): Promise<CardGameView> {
     const { game, ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
     return this.view(game, user, ctx);
+  }
+
+  async acknowledgeGifts(user: AuthUser, ids: string[]) {
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 20 || ids.some(id => typeof id !== 'string' || !/^[a-f\d]{64}$/.test(id))) {
+      throw new BadRequestException('一次只能确认 1 至 20 条有效赠卡通知');
+    }
+    const { ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
+    return this.storage.acknowledgeGifts(user.teamId, user.userId, [...new Set(ids)]);
   }
 
   async getWeekPoints(user: AuthUser, weekKey: string) {
@@ -148,15 +157,35 @@ export class CardsService {
       try {
         result = applyGameAction(state, user.userId, { action: input.action, count: input.count, cardId: privateCardId, targetId: input.targetId, secondTargetId: input.secondTargetId }, ctx);
       } catch (error) { throw new BadRequestException((error as Error).message); }
+      const person = (id: string) => {
+        const member = ctx.players.find(player => player.id === id);
+        if (!member) throw new BadRequestException('结算对象不在当前团队');
+        return { id, username: member.username, displayName: member.name || member.username };
+      };
+      const effects = result.effects?.map(({ targetId, actualTargetId, ...effect }) => ({ ...effect, target: person(targetId),
+        ...(actualTargetId ? { actualTarget: person(actualTargetId) } : {}) }));
+      const card = privateCardId ? CARD_CATALOG.find(item => item.id === privateCardId)! : undefined;
+      const actionCard = card ? { id: publicId(card.id), name: card.name, rarity: card.rarity } : undefined;
+      const descriptions = effects?.map(effect => {
+        const name = `${effect.target.displayName}（${effect.target.username}）`;
+        if (effect.outcome === 'blocked') return `${name}：被防御或免疫抵消`;
+        if (effect.outcome === 'no-effect') return `${name}：${effect.detail ?? '未产生时长变化'}`;
+        const outcome = effect.kind === 'time' ? `${effect.deltaSeconds! < 0 ? '扣除' : '增加'} ${Math.abs(effect.deltaSeconds!) / 60} 分钟` : effect.detail;
+        return `${name}：${effect.outcome === 'reflected' ? `反弹至 ${effect.actualTarget!.displayName}（${effect.actualTarget!.username}），` : ''}${outcome}`;
+      });
       const resultView = {
-        message: result.message,
+        action: input.action,
+        message: actionCard ? `${input.action === 'gift' ? '已赠送' : '已使用'}「${actionCard.name}」。${descriptions?.join('；') ?? ''}` : result.message,
+        ...(actionCard ? { actionCard } : {}), ...(effects ? { effects } : {}),
         ...(result.gainedCardId ? { gainedCardId: publicId(result.gainedCardId) } : {}),
         ...(result.gainedCardIds ? { gainedCardIds: result.gainedCardIds.map(publicId) } : {}),
         ...(result.drawAnimation ? { drawAnimation: result.drawAnimation } : {}),
         ...(result.ssrPity !== undefined ? { ssrPity: result.ssrPity } : {}),
         ...(result.drawCount ? { drawCount: result.drawCount, radianceCount: result.radianceCount } : {})
       };
-      const receipt: CardActionReceipt = { actorId: user.userId, requestKey: input.requestKey, hash: requestHash, at: new Date(ctx.now).toISOString(), result: resultView };
+      const at = new Date(ctx.now).toISOString();
+      const receipt: CardActionReceipt = { actorId: user.userId, requestKey: input.requestKey, hash: requestHash, at, result: resultView,
+        ...(input.action === 'gift' && actionCard ? { gift: { recipientId: input.targetId!, notice: { at, sender: person(user.userId), card: actionCard } } } : {}) };
       if (await this.storage.commit(game, state, ctx.now, { receiptKey, value: receipt })) {
         const saved = await this.storage.load(user.teamId, ctx.week);
         return { result: resultView, state: await this.view(saved, user, ctx) };

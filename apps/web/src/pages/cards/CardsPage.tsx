@@ -8,6 +8,8 @@ import { CardArt, CardArtScope } from '@/features/cards/CardArt';
 import { IdleCardOrbit, type IdleCardOrbitProps } from '@/features/cards/IdleCardOrbit';
 import { DrawAnimation } from '@/features/cards/DrawAnimation';
 import { CardDetailsDialog } from '@/features/cards/CardDetailsDialog';
+import { CardActionResultDialog } from '@/features/cards/CardActionResultDialog';
+import { CardGiftInboxDialog } from '@/features/cards/CardGiftInboxDialog';
 import { DrawRulesDialog } from '@/features/cards/DrawRulesDialog';
 import { useCardGame } from '@/features/cards/use-card-game';
 import { formatComprehensiveDuration, formatDateTime } from '@/shared/lib/time';
@@ -29,20 +31,28 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
   const game = useCardGame(identity);
   const [filter, setFilter] = useState<CardRarity | 'all'>('all'), [selectedId, setSelectedId] = useState('');
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [dismissedGifts, setDismissedGifts] = useState('');
   const [mode, setMode] = useState<'use' | 'gift'>('use'), [targetId, setTargetId] = useState(''), [secondTargetId, setSecondTargetId] = useState('');
   const view = game.view;
   const tenFree = Math.min(10, view?.freeRemaining ?? 0);
   const tenGifts = Math.min(10 - tenFree, view?.giftDraws ?? 0);
   const tenCost = (10 - tenFree - tenGifts) * 60;
-  const selected = view?.collection.find(card => card.id === selectedId && card.unlocked);
+  const selected = game.actionReveal ? undefined : view?.collection.find(card => card.id === selectedId && card.unlocked);
+  const incomingGifts = view?.incomingGifts ?? [];
+  const giftKey = incomingGifts.map(gift => gift.id).join(':');
+  const showGifts = Boolean(giftKey && giftKey !== dismissedGifts && !selected && !rulesOpen && !game.drawReveal && !game.actionReveal);
   const locked = Boolean(view && future(view.statuses.lockedUntil)), starved = Boolean(view && future(view.statuses.starvedUntil));
-  const disabled = game.busy || Boolean(game.pending) || Boolean(game.drawReveal) || Boolean(view?.capacityLimited);
+  const disabled = game.busy || Boolean(game.pending) || Boolean(game.drawReveal) || Boolean(game.actionReveal) || Boolean(view?.capacityLimited);
   const targetMode = mode === 'gift' ? 'other' : selected?.targetMode ?? 'none';
   const targets = view?.players.filter(player => player.enrollYear === enrollYear && (targetMode === 'self-or-other' || targetMode === 'two' || player.id !== userId)) ?? [];
   const needsTarget = targetMode !== 'none';
   const validTargets = !needsTarget || Boolean(targets.some(player => player.id === targetId) && (targetMode !== 'two' || targets.some(player => player.id === secondTargetId) && targetId !== secondTargetId));
   const canAct = Boolean(selected && selected.quantity > 0 && validTargets && !disabled && (mode === 'gift' || selected.usable !== false && !locked));
-  const choose = (id: string) => { setSelectedId(id); setTargetId(''); setSecondTargetId(''); setMode('use'); };
+  const choose = (id: string, action: 'use' | 'gift' = 'use') => {
+    game.clearFeedback();
+    setSelectedId(id); setMode(action); setSecondTargetId('');
+    setTargetId(action === 'use' && view?.collection.find(card => card.id === id)?.targetMode === 'self-or-other' ? userId : '');
+  };
   return <CardArtScope><div className="mx-auto max-w-7xl p-5 md:p-8 space-y-7">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-2xl font-semibold text-gray-900">积分与卡牌</h1><p className="mt-2 text-sm text-gray-500">打卡积累积分，慢慢揭开属于你的卡牌图鉴。</p></div>
@@ -92,7 +102,7 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
           {view.collection.filter(card => filter === 'all' || card.rarity === filter).map(card => <article key={card.id} className={`rounded-2xl border p-3 ${card.unlocked ? frames[card.rarity] : 'border-gray-200 bg-gray-50'}`}>
             <div className="mb-2 flex items-center justify-between text-xs"><span className="font-semibold tracking-wider text-gray-500">{card.rarity}</span><span className="text-gray-500">{card.unlocked ? `持有 ${card.quantity}` : '尚未发现'}</span></div>
-            {card.unlocked ? <><button type="button" className="block w-full rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600" onClick={() => choose(card.id)} aria-label={`查看${card.name ?? '已发现卡牌'}卡面详情`}><CardArt key={`${identity}:${card.id}`} id={card.id} name={card.name ?? '已发现卡牌'} interactive={false} /></button><button type="button" className="mt-3 w-full text-left rounded-lg focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600" onClick={() => choose(card.id)} aria-label={`查看${card.name ?? '已发现卡牌'}`}><h3 className="text-sm font-semibold">{card.name}</h3><p className="mt-1 text-xs text-gray-500">{card.type} · {card.stat}</p><span className="mt-2 inline-block text-xs text-blue-700">查看详情与使用 →</span></button></> : <div><div className="aspect-[2/3] rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-100 flex flex-col items-center justify-center gap-4 text-gray-400" aria-label={`${card.rarity}级未知卡牌`}><HelpCircle className="h-14 w-14 stroke-1" aria-hidden="true" /><span className="text-xs tracking-widest">LEC COLLECTION</span></div><h3 className="mt-3 text-sm text-gray-500">未知卡牌</h3><p className="mt-1 text-xs text-gray-500">获得后查看真容</p></div>}
+            {card.unlocked ? <><button type="button" className="block w-full rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600" onClick={() => choose(card.id)} aria-label={`查看${card.name ?? '已发现卡牌'}卡面详情`}><CardArt key={`${identity}:${card.id}`} id={card.id} name={card.name ?? '已发现卡牌'} interactive={false} /></button><button type="button" className="mt-3 w-full text-left rounded-lg focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600" onClick={() => choose(card.id)} aria-label={`查看${card.name ?? '已发现卡牌'}`}><h3 className="text-sm font-semibold">{card.name}</h3><p className="mt-1 text-xs text-gray-500">{card.type} · {card.stat}</p><span className="mt-2 inline-block text-xs text-blue-700">查看详情与使用 →</span></button>{card.quantity > 0 && <div className="mt-3 grid grid-cols-2 gap-2">{card.usable === false ? <span className="flex items-center justify-center rounded-lg bg-gray-100 px-2 py-2.5 text-xs text-gray-500">自动生效</span> : <button type="button" disabled={disabled || locked} aria-label={`使用${card.name}`} onClick={() => choose(card.id, 'use')} className="min-h-11 rounded-lg bg-gray-900 px-2 py-2.5 text-sm text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50">使用</button>}<button type="button" disabled={disabled} aria-label={`赠送${card.name}`} onClick={() => choose(card.id, 'gift')} className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-gray-300 bg-white px-2 py-2.5 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50"><Gift size={14} aria-hidden="true" />赠送</button></div>}</> : <div><div className="aspect-[2/3] rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-100 flex flex-col items-center justify-center gap-4 text-gray-400" aria-label={`${card.rarity}级未知卡牌`}><HelpCircle className="h-14 w-14 stroke-1" aria-hidden="true" /><span className="text-xs tracking-widest">LEC COLLECTION</span></div><h3 className="mt-3 text-sm text-gray-500">未知卡牌</h3><p className="mt-1 text-xs text-gray-500">获得后查看真容</p></div>}
           </article>)}
         </div>
       </section>
@@ -117,5 +127,5 @@ const CardsWorkspace = ({ identity, userId, enrollYear, renderDrawAnimation }: {
       <details className="rounded-xl border border-gray-200 bg-white p-5 text-sm"><summary className="cursor-pointer font-medium">每周重置与跨周保留说明</summary><div className="mt-4 space-y-3 leading-7 text-gray-600"><p>北京时间周一 00:00 重置：抽卡积分、娱乐时长、免费抽卡次数（恢复 2 次）、当周赠送抽卡机会，以及加速、免疫、封卡、连环等临时状态。未使用的免费次数和赠送机会不补发。</p><p>跨周保留：已获得卡片、图鉴发现记录、SR / SSR 保底进度，以及历史操作记录。卡牌用完或转赠后，图鉴也不会重新变成问号。</p><p>本周综合时长每满 1 分钟对应 1 积分额度；有效打卡、管理员净调整和卡牌净增减统一计算。加时、扣时、偷取、转移与连环都会影响考核、排行和积分额度。抽卡只消耗积分，不扣综合时长；本周已消费积分保留，额度降低后需先补足差额才能继续付费抽卡。卡牌不改原始签到、签退记录。</p></div></details>
       <section className="space-y-3"><h2 className="text-lg font-semibold">最近操作</h2>{view.events.length === 0 ? <p className="text-sm text-gray-500">还没有卡牌操作记录，从本周的免费抽卡开始吧。</p> : <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white px-5">{view.events.map(event => <li key={event.id} className="py-4 text-sm"><p>{event.message}</p><time className="mt-1 block text-xs text-gray-500" dateTime={event.at}>{formatDateTime(event.at)}</time></li>)}</ul>}</section>
     </>}
-  </div>{rulesOpen && <DrawRulesDialog onClose={() => setRulesOpen(false)} />}{game.drawReveal && <DrawAnimation response={game.drawReveal} onComplete={game.finishReveal} />}</CardArtScope>;
+  </div>{rulesOpen && <DrawRulesDialog onClose={() => setRulesOpen(false)} />}{game.drawReveal && <DrawAnimation response={game.drawReveal} onComplete={game.finishReveal} />}{game.actionReveal && <CardActionResultDialog action={game.actionReveal.action} response={game.actionReveal.response} onClose={() => { setSelectedId(''); game.finishActionReveal(); }} />}{showGifts && <CardGiftInboxDialog key={giftKey} gifts={incomingGifts} onClose={() => setDismissedGifts(giftKey)} onConfirmed={() => { setDismissedGifts(giftKey); void game.refresh(); }} />}</CardArtScope>;
 };
