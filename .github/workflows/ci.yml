@@ -43,6 +43,3 @@ jobs:
 
       - name: Run workspace tests
         run: pnpm test
-
-      - name: Test deployment boundaries
-        run: python3 -m unittest discover -s deploy/automation -p 'test_*.py' -v

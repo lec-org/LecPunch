@@ -127,14 +127,10 @@ Because the archived `users` collection already contains role and password-hash 
 
 ## 8. 团队服务器自动部署
 
-`main` 的检查、镜像构建和生产发布由 KubeSphere DevOps 的 `lecpunch/main` 负责，配置见 [Jenkins 发布说明](jenkins/README.md)。GitHub Actions 的 `ci.yml` 仅检查 PR，不再自动部署；桌面端 `desktop-release.yml` 仅允许手动选择版本标签创建草稿 Release。
+BoxPro 使用 [Devtron 发布平台](https://10.37.218.3:35480/dashboard/)，通过 LecSSO 登录。`lec-platform` 项目中的 `lecpunch-web-pilot` 和 `lecpunch-api-pilot` 分别管理 Web、API；名称保留了接入阶段的标识，已经承接原访问入口。
 
-发布范围按上次成功发布的提交到当前 `main` 的完整差异决定：Web 改动只发 Web，API 改动只发 API，`apps/election` 改动不发布。共享契约、根依赖锁文件和公共构建配置影响两个服务，均需重新构建。所有必需检查及选中镜像构建成功后，才允许按摘要发布同一提交。失败或被较新提交取代的构建不会导致改动遗漏，下次仍从上次成功发布的基线判断。
+只监听 `lec-org/LecPunch` 的 `main`：Web 目录变动只构建、发布 Web，API 目录变动只构建、发布 API；共享契约、根依赖和公共构建配置影响两者。Desktop 不触发自动部署。GitHub Actions 的 `ci.yml` 继续检查 PR，`desktop-release.yml` 仅提供手动桌面打包，不参与服务器发布。
 
-- 内部 PVE：`gateway.py` 安装为 `/usr/local/sbin/lec-deploy-punch-gateway`，专用公钥绑定 `restrict,command="/usr/local/sbin/lec-deploy-punch-gateway pve"`，只允许 `check`、`status` 和 `deploy`。
-- CT103：`production.py` 安装为 `/usr/local/sbin/lec-deploy-punch`，`lecpunch_changes.py` 安装到同一目录，由 root 管理。它复用已安装的 `/usr/local/sbin/lec-deploy-production`；`--install` 只用于首次接入现有 1Panel 编排，禁止重复运行。
-- 发布器再次核验 Jenkins 必需阶段、归档镜像、最新 `main`、变更范围和镜像提交标签，只更新选中服务。另一服务的镜像和容器身份必须保留。
+镜像必须经过本次提交的类型检查、测试和构建，推送 GHCR 成功后才能进入原生 Helm 发布。服务端校验提交属于配置分支，并阻止已经被同一应用新改动取代的旧构建自动上线。Web/API 独立判断，不因另一应用的新提交互相阻塞。检查失败不产出部署制品；不健康的新 Pod 不接流量，历史版本可在发布历史中回滚。
 
-实际编排位于 `/opt/1panel/docker/compose/lecpunch-production`，生产 `.env`、公网端口、数据卷、资源限制留在服务器。发布前备份 Mongo，发布后检查健康、端口、挂载与未选中容器身份。状态、日志和备份位于 CT103 的 `/var/lib/lecpunch-deploy`。失败时停止，不自动恢复数据库；根权限执行器需管理员审查后手动更新。
-
-本地验证：`python3 -m unittest discover -s deploy/automation -p 'test_*.py' -v`。日常发布结果在 KubeSphere DevOps 的 `lecpunch/main` 中查看。
+公网校园服务本次没有切换。BoxPro 保留原地址 `https://10.37.218.3:35183`、SSO issuer、MongoDB、报表目录和签到网络规则，`ALLOW_ANY_NETWORK=false`。原 Compose API 容器停用，数据卷与恢复备份保留。发布配置、迁移及验证记录统一在平台仓库 `deploy/devtron/` 维护，不再使用独立 SSH 发布器。
