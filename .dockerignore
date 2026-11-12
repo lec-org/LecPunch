@@ -15,3 +15,6 @@ docs
 deploy/*.env
 apps/*/.env
 apps/*/.env.*
+
+# 配置契约测试只读取公开示例；实际环境凭据仍排除在构建上下文外。
+!apps/*/.env.example
