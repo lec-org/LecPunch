@@ -18,8 +18,13 @@ export class CardsController {
   @Post('interactions/ack') acknowledgeInteractions(@CurrentUser() user: AuthUser, @Body() input: CardGiftsAckDto) { return this.cards.acknowledgeInteractions(user, input.ids); }
   @Get('actions/:requestKey') status(@CurrentUser() user: AuthUser, @Param('requestKey') key: string) { return this.cards.actionStatus(user, key); }
   @Get('art/:cardId') async art(@CurrentUser() user: AuthUser, @Param('cardId') id: string, @Res() response: Response) {
-    const file = await this.cards.artwork(user, id);
+    const asset = await this.cards.artwork(user, id);
     response.setHeader('Cache-Control', 'private, no-store'); response.setHeader('Content-Type', 'image/png');
-    response.sendFile(file);
+    if (asset.buffer) {
+      response.setHeader('Content-Length', String(asset.buffer.length));
+      response.send(asset.buffer);
+      return;
+    }
+    response.sendFile(asset.filePath!);
   }
 }

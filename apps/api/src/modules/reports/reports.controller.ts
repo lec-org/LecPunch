@@ -81,7 +81,11 @@ export class ReportsController {
     response.setHeader('Content-Type', image.contentType);
     response.setHeader('Content-Length', String(image.sizeBytes));
     response.setHeader('Cache-Control', 'private, no-store');
-    response.sendFile(image.absolutePath);
+    if (image.buffer) {
+      response.send(image.buffer);
+      return;
+    }
+    response.sendFile(image.absolutePath!);
   }
 
   private assertAdmin(user: AuthUser) {

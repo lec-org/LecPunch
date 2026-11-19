@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'crypto';
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { basename, isAbsolute, relative, resolve } from 'path';
 import { Model } from 'mongoose';
+import { S3ObjectStorage, joinS3Key } from '../../common/s3-object-storage';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { NotificationsService } from '../notifications/notifications.service';
 import type { CreateReportDto } from './dto/create-report.dto';
@@ -26,7 +27,8 @@ export interface UploadedReportImage {
 }
 
 export interface ReportImageFile {
-  absolutePath: string;
+  absolutePath?: string;
+  buffer?: Buffer;
   contentType: string;
   sizeBytes: number;
 }
@@ -35,6 +37,8 @@ export interface ReportImageFile {
 export class ReportsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ReportsService.name);
   private readonly imageDirectory: string;
+  private readonly s3Storage: S3ObjectStorage | null;
+  private readonly s3Prefix: string;
   private readonly retentionHours: number;
   private readonly maxImageBytes: number;
   private cleanupTimer?: NodeJS.Timeout;
@@ -45,12 +49,16 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
     configService: ConfigService
   ) {
     this.imageDirectory = resolve(configService.get<string>('REPORT_IMAGES_DIR') ?? './data/report-images');
+    this.s3Storage = S3ObjectStorage.fromConfig(configService);
+    this.s3Prefix = configService.get<string>('LEC_S3_REPORT_IMAGES_PREFIX') || 'punch/reports';
     this.retentionHours = configService.get<number>('REPORT_IMAGE_RETENTION_HOURS') ?? 3;
     this.maxImageBytes = configService.get<number>('REPORT_IMAGE_MAX_BYTES') ?? 3 * 1024 * 1024;
   }
 
   async onModuleInit() {
-    await mkdir(this.imageDirectory, { recursive: true });
+    if (!this.s3Storage) {
+      await mkdir(this.imageDirectory, { recursive: true });
+    }
     await this.cleanupExpiredImages();
     await this.deliverPendingNotifications();
     this.cleanupTimer = setInterval(() => {
@@ -182,6 +190,19 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException('Report image not found');
     }
 
+    if (this.s3Storage) {
+      this.assertValidFilename(image.filename);
+      const object = await this.s3Storage.getObject(joinS3Key(this.s3Prefix, image.filename));
+      if (!object) {
+        throw new NotFoundException('Report image not found');
+      }
+      return {
+        buffer: object.body,
+        contentType: image.contentType,
+        sizeBytes: object.body.length
+      };
+    }
+
     return {
       absolutePath: this.getImageAbsolutePath(image.filename),
       contentType: image.contentType,
@@ -215,14 +236,20 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
-    await mkdir(this.imageDirectory, { recursive: true });
+    if (!this.s3Storage) {
+      await mkdir(this.imageDirectory, { recursive: true });
+    }
     const images: ReportImage[] = [];
     try {
       for (const file of files) {
         const id = randomUUID();
         const extension = ALLOWED_IMAGE_TYPES.get(file.mimetype)!;
         const filename = `${id}${extension}`;
-        await writeFile(this.getImageAbsolutePath(filename), file.buffer, { flag: 'wx' });
+        if (this.s3Storage) {
+          await this.s3Storage.putObject(joinS3Key(this.s3Prefix, filename), file.buffer, file.mimetype);
+        } else {
+          await writeFile(this.getImageAbsolutePath(filename), file.buffer, { flag: 'wx' });
+        }
         images.push({ id, filename, contentType: file.mimetype, sizeBytes: file.size });
       }
       return images;
@@ -242,15 +269,24 @@ export class ReportsService implements OnModuleInit, OnModuleDestroy {
   private async deleteImages(images: ReportImage[]) {
     await Promise.all(
       images.map(async (image) => {
-        await rm(this.getImageAbsolutePath(image.filename), { force: true });
+        if (this.s3Storage) {
+          this.assertValidFilename(image.filename);
+          await this.s3Storage.deleteObject(joinS3Key(this.s3Prefix, image.filename));
+        } else {
+          await rm(this.getImageAbsolutePath(image.filename), { force: true });
+        }
       })
     );
   }
 
-  private getImageAbsolutePath(filename: string) {
+  private assertValidFilename(filename: string) {
     if (!/^[0-9a-f-]{36}\.(jpg|png|webp)$/.test(filename)) {
       throw new Error('Invalid report image filename');
     }
+  }
+
+  private getImageAbsolutePath(filename: string) {
+    this.assertValidFilename(filename);
 
     const absolutePath = resolve(this.imageDirectory, basename(filename));
     const relativePath = relative(this.imageDirectory, absolutePath);

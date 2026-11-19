@@ -64,7 +64,14 @@ export const validationSchema = Joi.object({
   TRUSTED_PROXY_HOPS: Joi.number().min(1).default(1),
   REPORT_IMAGES_DIR: Joi.string().min(1).default('./data/report-images'),
   REPORT_IMAGE_RETENTION_HOURS: Joi.number().integer().min(1).max(24).default(3),
-  REPORT_IMAGE_MAX_BYTES: Joi.number().integer().min(1_024).max(3 * 1024 * 1024).default(3 * 1024 * 1024)
+  REPORT_IMAGE_MAX_BYTES: Joi.number().integer().min(1_024).max(3 * 1024 * 1024).default(3 * 1024 * 1024),
+  LEC_S3_ENDPOINT: Joi.string().uri({ scheme: ['http', 'https'] }).allow('').optional(),
+  LEC_S3_BUCKET: Joi.string().allow('').optional(),
+  LEC_S3_REGION: Joi.string().default('us-east-1'),
+  LEC_S3_ACCESS_KEY: Joi.string().allow('').optional(),
+  LEC_S3_SECRET_KEY: Joi.string().allow('').optional(),
+  LEC_S3_CARD_ASSETS_PREFIX: Joi.string().default('punch/cards/20261027-v1'),
+  LEC_S3_REPORT_IMAGES_PREFIX: Joi.string().default('punch/reports')
 })
   .custom((value, helpers) => {
     const hasAllowedIps = csvToArray(value.ALLOWED_PUBLIC_IPS).length > 0;

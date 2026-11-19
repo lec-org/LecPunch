@@ -18,6 +18,7 @@ import { AssessmentWeek, type AssessmentWeekDocument } from '../assessment/schem
 import { readAssessmentCohorts } from '../assessment/assessment-cohorts';
 import { advanceGameState, applyGameAction, getPlayerWeek, type GameContext } from './card-engine';
 
+import { S3ObjectStorage, joinS3Key } from '../../common/s3-object-storage';
 import { CardCapacityException, CardStorageService, type CardSnapshot as Snapshot } from './card-storage.service';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const publicId = (id: string) => `card-${String(CARD_CATALOG.findIndex(card => card.id === id) + 1).padStart(2, '0')}`;
@@ -300,16 +301,23 @@ export class CardsService {
     return { result: receipt.result, state: await this.view(game, user, ctx) };
   }
 
-  async artwork(user: AuthUser, id: string): Promise<string> {
+  async artwork(user: AuthUser, id: string): Promise<{ filePath?: string; buffer?: Buffer }> {
     const cardId = privateId(id);
     if (!cardId) throw new NotFoundException('卡片不存在');
     const { game, ctx } = await this.refresh(user.teamId); this.assertActor(user, ctx);
     if (!game.state.members[user.userId].discovered.includes(cardId)) throw new ForbiddenException('尚未发现这张卡片');
+    const s3 = S3ObjectStorage.fromConfig(this.config);
+    if (s3) {
+      const prefix = this.config.get<string>('LEC_S3_CARD_ASSETS_PREFIX') || 'punch/cards/20261027-v1';
+      const object = await s3.getObject(joinS3Key(prefix, `${cardId}.png`));
+      if (!object) throw new NotFoundException('卡牌图片暂不可用');
+      return { buffer: object.body };
+    }
     const directory = this.config.get<string>('LEC_CARD_ASSETS_DIR');
     if (!directory) throw new ServiceUnavailableException('卡牌图片目录尚未配置');
     const file = resolve(directory, `${cardId}.png`);
     try { await access(file); } catch { throw new NotFoundException('卡牌图片暂不可用'); }
-    return file;
+    return { filePath: file };
   }
 
   async getTeamWeekEntertainment(teamId: string, weekKey: string): Promise<Record<string, number>> {
