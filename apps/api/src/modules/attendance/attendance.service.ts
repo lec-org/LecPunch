@@ -9,7 +9,7 @@ import {
   AttendanceDurationAdjustmentDocument,
   type AttendanceDurationAdjustmentOperation
 } from './schemas/attendance-duration-adjustment.schema';
-import { NetworkPolicyService } from '../network-policy/network-policy.service';
+import { NetworkPolicyService, type WifiScanSample } from '../network-policy/network-policy.service';
 import { UsersService } from '../users/users.service';
 import {
   ERROR_CODES,
@@ -73,8 +73,12 @@ export class AttendanceService {
     };
   }
 
-  async checkIn(user: AuthUser, clientIp: string) {
-    await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp);
+  async checkIn(user: AuthUser, clientIp: string, wifiScan?: WifiScanSample[]) {
+    if (wifiScan !== undefined) {
+      await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp, wifiScan);
+    } else {
+      await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp);
+    }
     const existing = await this.findActiveSession(user.userId);
     if (existing) {
       throw new BadRequestException({
@@ -110,7 +114,7 @@ export class AttendanceService {
     return session;
   }
 
-  async checkOut(user: AuthUser, clientIp: string) {
+  async checkOut(user: AuthUser, clientIp: string, wifiScan?: WifiScanSample[]) {
     const session = await this.findActiveSession(user.userId);
     if (!session) {
       throw new BadRequestException({
@@ -121,7 +125,11 @@ export class AttendanceService {
 
     const checkOutAt = new Date();
 
-    await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp);
+    if (wifiScan !== undefined) {
+      await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp, wifiScan);
+    } else {
+      await this.networkPolicyService.assertIpAllowed(user.teamId, clientIp);
+    }
 
     const isOvertime = await this.invalidateSessionIfOvertime(session, checkOutAt, clientIp);
     if (isOvertime) {

@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.type';
 import { NetworkPolicyService } from '../network-policy/network-policy.service';
+import { CheckNetworkStatusDto } from '../network-policy/dto/wifi-fingerprint.dto';
 import type { Request } from 'express';
 import { AdjustCurrentWeekDurationDto } from './dto/adjust-current-week-duration.dto';
 import { WeeklySummaryQueryDto } from './dto/weekly-summary-query.dto';
@@ -37,16 +38,30 @@ export class AttendanceController {
   }
 
   @Post('check-in')
-  async checkIn(@CurrentUser() user: AuthUser, @Req() request: Request) {
+  async checkIn(
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+    @Body() body?: CheckNetworkStatusDto
+  ) {
     const ip = await this.networkPolicyService.getClientIp(user.teamId, request);
-    const session = await this.attendanceService.checkIn(user, ip);
+    const session =
+      body?.wifiScan !== undefined
+        ? await this.attendanceService.checkIn(user, ip, body.wifiScan)
+        : await this.attendanceService.checkIn(user, ip);
     return this.mapSession(session);
   }
 
   @Post('check-out')
-  async checkOut(@CurrentUser() user: AuthUser, @Req() request: Request) {
+  async checkOut(
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+    @Body() body?: CheckNetworkStatusDto
+  ) {
     const ip = await this.networkPolicyService.getClientIp(user.teamId, request);
-    const session = await this.attendanceService.checkOut(user, ip);
+    const session =
+      body?.wifiScan !== undefined
+        ? await this.attendanceService.checkOut(user, ip, body.wifiScan)
+        : await this.attendanceService.checkOut(user, ip);
     return this.mapSession(session);
   }
 

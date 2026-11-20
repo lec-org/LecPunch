@@ -184,4 +184,103 @@ describe('NetworkPolicyService', () => {
       });
     }
   });
+
+  it('enforces studio Wi-Fi fingerprint matching when enabled even if IP allowAnyNetwork is true', async () => {
+    findOne.mockReturnValue({
+      exec: vi.fn().mockResolvedValue({
+        teamId: 'team-1',
+        allowAnyNetwork: true,
+        allowedPublicIps: [],
+        allowedCidrs: [],
+        trustProxy: true,
+        trustedProxyHops: 1,
+        wifiFingerprintEnabled: true,
+        wifiAnchors: [
+          { bssid: 'aa:bb:cc:dd:ee:01', ssid: 'Campus-5G', sampleRssi: -55 },
+          { bssid: 'aa:bb:cc:dd:ee:02', ssid: 'Campus-2G', sampleRssi: -60 },
+          { bssid: 'aa:bb:cc:dd:ee:03', ssid: 'Lab-AP', sampleRssi: -65 }
+        ],
+        wifiMinMatchCount: 2,
+        wifiMinRssi: -80
+      })
+    });
+
+    const service = createService({ ALLOW_ANY_NETWORK: true });
+
+    // 命中 2 个固定 AP 且信号达标 -> 放行
+    const ok = await service.evaluateAccess('team-1', '1.2.3.4', [
+      { bssid: 'AA-BB-CC-DD-EE-01', rssi: -58 },
+      { bssid: 'aa:bb:cc:dd:ee:03', rssi: -75 }
+    ]);
+    expect(ok.isAllowed).toBe(true);
+    expect(ok.matchedCount).toBe(2);
+    await expect(
+      service.assertIpAllowed('team-1', '1.2.3.4', [
+        { bssid: 'AA:BB:CC:DD:EE:01', rssi: -58 },
+        { bssid: 'aa:bb:cc:dd:ee:03', rssi: -75 }
+      ])
+    ).resolves.toBeUndefined();
+
+    // 信号过弱（-89 dBm < -80 dBm）仅命中 1 个 -> 拦截
+    const weak = await service.evaluateAccess('team-1', '1.2.3.4', [
+      { bssid: 'aa:bb:cc:dd:ee:01', rssi: -60 },
+      { bssid: 'aa:bb:cc:dd:ee:02', rssi: -89 }
+    ]);
+    expect(weak.isAllowed).toBe(false);
+    expect(weak.matchedCount).toBe(1);
+
+    // 未上报 wifiScan -> 拦截
+    await expect(service.assertIpAllowed('team-1', '1.2.3.4')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('merges and validates admin Wi-Fi fingerprint updates', async () => {
+    findOne.mockReturnValue({
+      exec: vi.fn().mockResolvedValue({
+        teamId: 'team-1',
+        allowAnyNetwork: true,
+        allowedPublicIps: [],
+        allowedCidrs: [],
+        trustProxy: false,
+        trustedProxyHops: 1,
+        wifiFingerprintEnabled: false,
+        wifiAnchors: [{ bssid: 'aa:bb:cc:dd:ee:01', ssid: 'AP-1', sampleRssi: -60 }],
+        wifiMinMatchCount: 2,
+        wifiMinRssi: -82
+      })
+    });
+
+    const service = createService({ ALLOW_ANY_NETWORK: true });
+
+    await expect(
+      service.updateWifiFingerprintConfig('team-1', {
+        enabled: true,
+        anchors: [],
+        merge: false
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    findOneAndUpdate.mockReturnValue({
+      exec: vi.fn().mockResolvedValue({
+        teamId: 'team-1',
+        wifiFingerprintEnabled: true,
+        wifiAnchors: [
+          { bssid: 'aa:bb:cc:dd:ee:01', ssid: 'AP-1', sampleRssi: -60 },
+          { bssid: 'aa:bb:cc:dd:ee:02', ssid: 'AP-2', sampleRssi: -55 }
+        ],
+        wifiMinMatchCount: 2,
+        wifiMinRssi: -80,
+        updatedAt: new Date('2026-11-20T08:00:00.000Z')
+      })
+    });
+
+    const saved = await service.updateWifiFingerprintConfig('team-1', {
+      enabled: true,
+      anchors: [{ bssid: 'AA-BB-CC-DD-EE-02', ssid: 'AP-2', sampleRssi: -55 }],
+      minMatchCount: 2,
+      minRssi: -80,
+      merge: true
+    });
+    expect(saved.enabled).toBe(true);
+    expect(saved.anchors).toHaveLength(2);
+  });
 });
