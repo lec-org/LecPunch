@@ -1,10 +1,24 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Post, Query, UseGuards, Req } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Inject,
+  Optional,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+  forwardRef
+} from '@nestjs/common';
 import { AttendanceService } from './attendance.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.type';
 import { NetworkPolicyService } from '../network-policy/network-policy.service';
 import { CheckNetworkStatusDto } from '../network-policy/dto/wifi-fingerprint.dto';
+import { TitlesService } from '../titles/titles.service';
 import type { Request } from 'express';
 import { AdjustCurrentWeekDurationDto } from './dto/adjust-current-week-duration.dto';
 import { WeeklySummaryQueryDto } from './dto/weekly-summary-query.dto';
@@ -14,7 +28,8 @@ import { WeeklySummaryQueryDto } from './dto/weekly-summary-query.dto';
 export class AttendanceController {
   constructor(
     private readonly attendanceService: AttendanceService,
-    private readonly networkPolicyService: NetworkPolicyService
+    private readonly networkPolicyService: NetworkPolicyService,
+    @Optional() @Inject(forwardRef(() => TitlesService)) private readonly titlesService?: TitlesService
   ) {}
 
   @Get('current')
@@ -29,7 +44,19 @@ export class AttendanceController {
   @Get('team-active')
   async getTeamActive(@CurrentUser() user: AuthUser) {
     const items = await this.attendanceService.listTeamActiveSessions(user.teamId);
-    return { items };
+    if (!this.titlesService || items.length === 0) {
+      return { items };
+    }
+    const titlesByKey = await this.titlesService.getTeamDisplayTitlesByMemberKey(user.teamId).catch(() => null);
+    if (!titlesByKey) {
+      return { items };
+    }
+    return {
+      items: items.map((item) => ({
+        ...item,
+        titles: titlesByKey[item.memberKey] ?? []
+      }))
+    };
   }
 
   @Get('me/weekly-summary')

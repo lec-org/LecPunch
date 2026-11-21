@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AttendanceSession, AttendanceSessionSchema } from './schemas/attendance-session.schema';
 import {
@@ -11,12 +11,14 @@ import { AttendanceController } from './attendance.controller';
 import { NetworkPolicyModule } from '../network-policy/network-policy.module';
 import { UsersModule } from '../users/users.module';
 import { PointsModule } from '../points/points.module';
+import { TitlesModule } from '../titles/titles.module';
 
 @Module({
   imports: [
     NetworkPolicyModule,
     UsersModule,
     PointsModule,
+    forwardRef(() => TitlesModule),
     MongooseModule.forFeature([
       { name: AttendanceSession.name, schema: AttendanceSessionSchema },
       { name: AttendanceAdjustmentBucket.name, schema: AttendanceAdjustmentBucketSchema },

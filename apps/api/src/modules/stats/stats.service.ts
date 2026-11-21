@@ -4,6 +4,7 @@ import { UsersService } from '../users/users.service';
 import { ERROR_CODES, weeklyGoalSeconds, comprehensiveDurationSeconds } from '@lecpunch/shared';
 import { getWeekKey } from '../../common/utils/time.util';
 import { CardsService } from '../cards/cards.service';
+import { TitlesService } from '../titles/titles.service';
 
 // Invalidated sessions remain visible in counts but never contribute to the
 // comprehensive duration, even if a legacy row retains a nonzero duration.
@@ -16,7 +17,8 @@ export class StatsService {
   constructor(
     private readonly attendanceService: AttendanceService,
     private readonly usersService: UsersService,
-    @Optional() private readonly cardsService?: CardsService
+    @Optional() private readonly cardsService?: CardsService,
+    @Optional() private readonly titlesService?: TitlesService
   ) {}
 
   async getMyWeeklyStats(teamId: string, userId: string, enrollYear: number, limit = 6) {
@@ -121,6 +123,9 @@ export class StatsService {
     const statsByUserId = new Map(rows.map((row) => [row._id, row]));
     const entertainment = await this.cardsService?.getTeamWeekEntertainment(teamId, weekKey) ?? {};
     const cardCounts = this.cardsService ? await this.cardsService.getTeamInventoryCounts(teamId) : undefined;
+    const titlesByUserId = this.titlesService
+      ? await this.titlesService.getTeamDisplayTitlesByUserId(teamId).catch(() => undefined)
+      : undefined;
 
     const items = members
       .map((member) => {
@@ -134,6 +139,7 @@ export class StatsService {
         return {
           memberKey: this.usersService.getMemberKey(member.id),
           ...(cardCounts ? { cardCount: cardCounts[member.id] ?? 0 } : {}),
+          ...(titlesByUserId ? { titles: titlesByUserId.get(member.id) ?? [] } : {}),
           totalDurationSeconds,
           ...(this.cardsService ? { entertainmentSeconds, weeklyGoalSeconds: goal, assessmentComplete: totalDurationSeconds >= goal } : {}),
           recordedDurationSeconds,

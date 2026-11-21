@@ -21,6 +21,7 @@ import { PointsModule } from './modules/points/points.module';
 import { MeetModule } from './modules/meet/meet.module';
 import { CardsModule } from './modules/cards/cards.module';
 import { AssessmentModule } from './modules/assessment/assessment.module';
+import { TitlesModule } from './modules/titles/titles.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { AssessmentModule } from './modules/assessment/assessment.module';
     WeeklyReportsModule,
     PointsModule,
     CardsModule,
+    TitlesModule,
     AssessmentModule,
     MeetModule,
     AttendanceModule,

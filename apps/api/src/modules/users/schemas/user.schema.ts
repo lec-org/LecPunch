@@ -63,6 +63,10 @@ export class User {
 
   @Prop({ type: String })
   avatarEmoji?: string;
+
+  /** 成员主动选择佩戴的称号 ID；未设置时按优先级自动展示已解锁的最高荣誉称号。 */
+  @Prop({ type: String })
+  equippedTitleId?: string;
 }
 
 export type UserDocument = HydratedDocument<User>;

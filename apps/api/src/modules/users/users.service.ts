@@ -85,6 +85,15 @@ export class UsersService {
     return { adminMessageBadgeEnabled: enabled };
   }
 
+  async setEquippedTitle(userId: string, titleId: string | null) {
+    if (titleId) {
+      await this.userModel.updateOne({ _id: userId }, { $set: { equippedTitleId: titleId } }).exec();
+    } else {
+      await this.userModel.updateOne({ _id: userId }, { $unset: { equippedTitleId: 1 } }).exec();
+    }
+    return { equippedTitleId: titleId };
+  }
+
   getMemberKey(userId: string) {
     const payload = Buffer.from(userId, 'utf8').toString('base64url');
     const signature = this.signMemberKeyPayload(payload);
