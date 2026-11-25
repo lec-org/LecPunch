@@ -95,7 +95,7 @@ describe('AttendanceService', () => {
     findOne.mockReturnValue({ exec: vi.fn().mockResolvedValue(session) });
     const result = await service.checkOut(user, '127.0.0.1');
     expect(result).toMatchObject({ status: 'completed', durationSeconds: 179, sourceIpAtCheckOut: '127.0.0.1' });
-    expect(pointsService.syncAttendancePoints).toHaveBeenCalledWith({ teamId: 'team-1', userId: 'user-1', attendanceSessionId: 'session-1', weekKey: '2026-04-06', durationSeconds: 179, isValid: true });
+    expect(pointsService.syncAttendancePoints).toHaveBeenCalledWith({ teamId: 'team-1', userId: 'user-1', attendanceSessionId: 'session-1', weekKey: '2026-04-06', durationSeconds: 179, isValid: true, window: { start: session.checkInAt, end: new Date() } });
   });
 
   it('invalidates a session when it reaches the five-hour limit', async () => {

@@ -7,7 +7,7 @@ import { AttendanceDurationAdjustment, AttendanceDurationAdjustmentDocument } fr
 import { AttendanceAdjustmentBucket, AttendanceAdjustmentBucketDocument } from '../attendance/schemas/attendance-adjustment-bucket.schema';
 import type { AuthUser } from '../auth/types/auth-user.type';
 import { AttendanceSession, AttendanceSessionDocument } from '../attendance/schemas/attendance-session.schema';
-import { comprehensiveDurationSeconds } from '@lecpunch/shared';
+import { ATTENDANCE_MAX_SECONDS, comprehensiveDurationSeconds } from '@lecpunch/shared';
 
 const ATTENDANCE_POINTS_PER_MINUTE = 1;
 const SECONDS_PER_MINUTE = 60;
@@ -19,6 +19,7 @@ export interface SyncAttendancePointsInput {
   weekKey: string;
   durationSeconds: number;
   isValid: boolean;
+  window?: { start: Date; end: Date };
 }
 
 @Injectable()
@@ -41,9 +42,33 @@ export class PointsService {
    * idempotent and lets invalidated sessions be reset to zero safely.
    */
   async syncAttendancePoints(input: SyncAttendancePointsInput): Promise<number> {
-    const points = input.isValid
+    const basePoints = input.isValid
       ? Math.floor(Math.max(0, input.durationSeconds) / SECONDS_PER_MINUTE) * ATTENDANCE_POINTS_PER_MINUTE
-      : 0;
+       : 0;
+    let points = basePoints;
+    if (basePoints && input.window) {
+      const { start, end } = input.window;
+      const maxMs = ATTENDANCE_MAX_SECONDS * 1000;
+      // Reconstruct the team-active roster over this session, including members
+      // who left before checkout. Active sessions expire at the same 5h cutoff.
+      const sessions = await this.attendance.find({ teamId: input.teamId,
+        checkInAt: { $gt: new Date(+start - maxMs), $lt: end },
+        $or: [{ checkOutAt: { $gt: start } }, { checkOutAt: null }]
+      }).select('checkInAt checkOutAt').lean().exec();
+      const changes = new Map<number, number>();
+      for (const s of sessions) {
+        const from = Math.max(+start, +s.checkInAt);
+        const until = Math.min(+end, +(s.checkOutAt ?? end), +s.checkInAt + maxMs);
+        if (from >= until) continue;
+        changes.set(from, (changes.get(from) ?? 0) + 1);
+        changes.set(until, (changes.get(until) ?? 0) - 1);
+      }
+      let active = 0;
+      for (const [, delta] of [...changes].sort(([a], [b]) => a - b)) {
+        active += delta;
+        if (active >= 8) { points = basePoints * 11 / 10; break; }
+      }
+    }
 
     await this.pointLedgerModel
       .findOneAndUpdate(
