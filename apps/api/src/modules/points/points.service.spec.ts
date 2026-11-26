@@ -89,6 +89,17 @@ describe('PointsService', () => {
     );
   });
 
+  it.each([[7, 1, 12.1], [6, 1, 11], [7, 0, 11]])('scores a peak with %i early members and %i ms overlap', async (count, overlapMs, expected) => {
+    const start = new Date(0), end = new Date(660000);
+    const rows = [ { checkInAt: start, checkOutAt: end },
+      ...Array.from({ length: count - 1 }, () => ({ checkInAt: start, checkOutAt: new Date(1000) })),
+      { checkInAt: new Date(1000 - overlapMs), checkOutAt: end } ];
+    const attendance = { find: () => ({ select: () => ({ lean: () => ({ exec: async () => rows }) }) }) };
+    service = new PointsService(pointLedgerModel, {} as any, {} as any, attendance as any);
+    findOneAndUpdate.mockReturnValue({ exec: vi.fn().mockResolvedValue({}) });
+    expect(await service.syncAttendancePoints({ teamId: 'team', userId: 'me', attendanceSessionId: 'session', weekKey: 'week', durationSeconds: 660, isValid: true, window: { start, end } })).toBe(expected);
+  });
+
   it('sets an invalidated attendance session to zero points', async () => {
     findOneAndUpdate.mockReturnValue({ exec: vi.fn().mockResolvedValue({}) });
 

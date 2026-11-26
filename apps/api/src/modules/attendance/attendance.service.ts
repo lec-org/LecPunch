@@ -640,6 +640,7 @@ export class AttendanceService {
       attendanceSessionId: session.id,
       weekKey: session.weekKey,
       durationSeconds,
+      ...(session.status === 'completed' && session.checkOutAt ? { window: { start: session.checkInAt, end: session.checkOutAt } } : {}),
       isValid: session.status === 'completed'
     });
   }
